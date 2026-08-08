@@ -25,12 +25,16 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 
+const sharp = require('sharp');
+const ytdl = require('@distube/ytdl-core');
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 
 /* -------------------------------------------------------------------------- */
@@ -89,6 +93,12 @@ const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
 // Désactivable : TRANSCRIPT_ENABLED=0
 const TRANSCRIPT_ENABLED = process.env.TRANSCRIPT_ENABLED !== '0';
 const TRANSCRIPT_FILE = path.join(__dirname, process.env.TRANSCRIPT_FILE || 'transcript.txt');
+
+// Dossier temporaire pour les médias téléchargés (.sticker / .yt)
+const MEDIA_DIR = path.join(__dirname, 'media_cache');
+try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (_) { /* non bloquant */ }
+// Durée maximale d'une vidéo YouTube téléchargeable (.yt) : 60 minutes
+const YT_MAX_SECONDS = 3600;
 
 const logger = pino({ level: LOG_LEVEL });
 
@@ -438,6 +448,26 @@ async function handleMessage(msg) {
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
 
+  const trimmed = body.trim();
+
+  // --- Commandes médias gérées directement par le bot (.sticker / .yt) ---
+  if (/^\.(sticker|yt|audio)\b/i.test(trimmed)) {
+    debugLog(`[media] commande locale : ${trimmed}`);
+    handleMediaCommand(msg, key, trimmed).catch((err) => {
+      debugLog(`[media] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Note vocale : transcription (Whisper) puis réponse IA ---
+  if (rawType === 'audioMessage' && msg.message.audioMessage?.ptt) {
+    debugLog('[vocal] note vocale reçue → transcription…');
+    handleVoiceNote(msg, key, remoteJid, sender).catch((err) => {
+      debugLog(`[vocal] erreur globale : ${err.message}`);
+    });
+    return;
+  }
+
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
       from: sender,
@@ -463,6 +493,242 @@ async function handleMessage(msg) {
   } catch (err) {
     debugLog(`[ERREUR] jid=${remoteJid} : ${err.message}`);
     console.error('Erreur lors du traitement du message :', err.message);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commandes médias (.sticker / .yt) + transcription des vocaux              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Envoie un message d'erreur propre (en citant le message d'origine).
+ */
+async function replyError(remoteJid, text, quoted) {
+  if (!sock) return;
+  try {
+    await sock.sendMessage(remoteJid, { text }, { quoted });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${text}`);
+  } catch (err) {
+    debugLog(`[media] envoi du message d'erreur impossible : ${err.message}`);
+  }
+}
+
+/**
+ * Point d'entrée des commandes médias : .sticker et .yt / .audio.
+ */
+async function handleMediaCommand(msg, key, body) {
+  const remoteJid = key.remoteJid;
+  if (/^\.sticker\b/i.test(body)) {
+    return handleStickerCommand(msg, remoteJid);
+  }
+  return handleYtCommand(msg, remoteJid, body);
+}
+
+/**
+ * .sticker — transforme une photo en sticker (512×512, webp).
+ *
+ * La photo peut être le message courant (photo avec la légende ".sticker")
+ * ou le message cité (réponse ".sticker" à une photo).
+ */
+async function handleStickerCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const quoted = current.extendedTextMessage?.contextInfo?.quotedMessage || null;
+
+  if (current.videoMessage || quoted?.videoMessage) {
+    return replyError(remoteJid,
+      '❌ Pour l\'instant, seules les photos deviennent des stickers. (vidéos non supportées)', msg);
+  }
+
+  // Photo du message courant (légende .sticker) ou photo citée
+  const source = current.imageMessage
+    ? msg
+    : (quoted?.imageMessage ? { ...msg, message: quoted } : null);
+
+  if (!source) {
+    return replyError(remoteJid,
+      '🖼 *Commande .sticker*\n'
+      + 'Envoyez une photo avec la légende `.sticker`\n'
+      + '— ou —\n'
+      + 'RÉPONDEZ à une photo avec `.sticker`.', msg);
+  }
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[sticker] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger la photo. Réessayez.', msg);
+  }
+
+  try {
+    const sticker = await sharp(buffer, { animated: false })
+      .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .webp({ quality: 90 })
+      .toBuffer();
+
+    await sock.sendMessage(remoteJid, { sticker }, { quoted: msg });
+    debugLog(`[sticker] envoyé (${sticker.length} octets)`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🖼 [sticker créé]`);
+  } catch (err) {
+    debugLog(`[sticker] conversion impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de convertir cette image en sticker.', msg);
+  }
+}
+
+/**
+ * .yt <url> — télécharge l'audio d'une vidéo YouTube et l'envoie dans le chat.
+ * Le fichier est nettoyé du dossier temporaire après l'envoi.
+ */
+async function handleYtCommand(msg, remoteJid, body) {
+  const url = body.replace(/^\.(?:yt|audio)\b/i, '').trim();
+
+  if (!url) {
+    return replyError(remoteJid,
+      '🎵 *Commande .yt*\n'
+      + 'Utilisation : `.yt <lien YouTube>`\n'
+      + 'Exemple : `.yt https://youtu.be/xxxx`', msg);
+  }
+  if (!ytdl.validateURL(url)) {
+    return replyError(remoteJid, '❌ Lien YouTube invalide. Collez l\'URL complète d\'une vidéo.', msg);
+  }
+
+  let info;
+  try {
+    info = await ytdl.getInfo(url);
+  } catch (err) {
+    debugLog(`[yt] infos indisponibles : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de lire cette vidéo (privée ou supprimée ?).', msg);
+  }
+
+  const duration = Number(info.videoDetails.lengthSeconds) || 0;
+  if (duration > YT_MAX_SECONDS) {
+    return replyError(remoteJid,
+      `⏱️ Vidéo trop longue (${Math.round(duration / 60)} min). Maximum : ${Math.round(YT_MAX_SECONDS / 60)} min.`, msg);
+  }
+
+  const title = (info.videoDetails.title || 'audio').slice(0, 80);
+  const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowestaudio' });
+  const container = (format?.container || 'webm').toLowerCase();
+  const ext = (container === 'm4a' || container === 'mp4') ? 'm4a'
+    : (container === 'mp3' ? 'mp3' : 'webm');
+  const mimetype = (container === 'm4a' || container === 'mp4') ? 'audio/mp4'
+    : (container === 'mp3' ? 'audio/mpeg' : 'audio/ogg; codecs=opus');
+  const filePath = path.join(MEDIA_DIR, `yt-${Date.now()}.${ext}`);
+
+  // Message de statut pendant le téléchargement (peut prendre quelques secondes)
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: '⏳ Téléchargement de l\'audio… (quelques secondes)',
+    }).catch(() => {});
+  }
+
+  try {
+    const stream = ytdl(url, { format });
+    await new Promise((resolve, reject) => {
+      const write = fs.createWriteStream(filePath);
+      // Garde-fou : le téléchargement ne doit jamais rester bloqué
+      const timer = setTimeout(() => {
+        stream.destroy();
+        reject(new Error('timeout de téléchargement (120 s)'));
+      }, 120000);
+      stream.pipe(write);
+      stream.on('error', (err) => { clearTimeout(timer); reject(err); });
+      write.on('finish', () => { clearTimeout(timer); resolve(); });
+      write.on('error', (err) => { clearTimeout(timer); reject(err); });
+    });
+  } catch (err) {
+    debugLog(`[yt] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Échec du téléchargement audio. Réessayez plus tard.', msg);
+  }
+
+  try {
+    await sock.sendMessage(remoteJid, {
+      audio: { url: filePath },
+      mimetype,
+      fileName: `${title}.${ext}`,
+      ptt: false, // audio normal (pas une note vocale)
+    }, { quoted: msg });
+    debugLog(`[yt] audio envoyé : ${title}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎵 [audio envoyé] ${title}`);
+  } catch (err) {
+    debugLog(`[yt] envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Envoi de l\'audio impossible.', msg);
+  } finally {
+    // Nettoyage différé du fichier temporaire
+    setTimeout(() => fs.unlink(filePath, () => {}), 60000);
+  }
+}
+
+/**
+ * Note vocale reçue → transcription Whisper (via le backend) → réponse IA.
+ *
+ * Si la transcription est désactivée côté backend, on ne fait rien : la note
+ * vocale est déjà tracée dans le transcript comme "🎵 [audio]".
+ */
+async function handleVoiceNote(msg, key, remoteJid, sender) {
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(msg, 'buffer', {});
+  } catch (err) {
+    debugLog(`[vocal] téléchargement impossible : ${err.message}`);
+    return;
+  }
+
+  const mime = msg.message.audioMessage?.mimetype || 'audio/ogg; codecs=opus';
+  const audioB64 = buffer.toString('base64');
+
+  let data;
+  try {
+    const { data: res } = await axios.post(`${FLASK_URL}/api/ai/transcribe`, {
+      audio: audioB64,
+      mime,
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 120000,
+    });
+    data = res;
+  } catch (err) {
+    debugLog(`[vocal] erreur backend (transcription) : ${err.message}`);
+    return;
+  }
+
+  if (!data?.transcribed || !data.text) {
+    debugLog(`[vocal] non transcrit : ${data?.reason || data?.error || 'refusé'}`);
+    return;
+  }
+
+  const text = data.text.trim();
+  debugLog(`[vocal] transcrit (${data.duration_ms || 0} ms) : ${text.slice(0, 120)}`);
+
+  // Journal de conversations : la transcription avec le nom du contact
+  try {
+    const who = await resolveSenderName(remoteJid, sender, msg.pushName);
+    transcriptLog(`[${fmtStamp(new Date())}] ${who} : 🎤 ${text}`);
+  } catch (_) { /* non bloquant */ }
+
+  // Le texte transcrit est traité comme un message vocal : l'IA répond
+  try {
+    const { data: ai } = await axios.post(`${FLASK_URL}/api/message`, {
+      from: sender,
+      remoteJid,
+      body: text,
+      isGroup: remoteJid.endsWith('@g.us'),
+      voice: true,
+      messageId: key.id,
+      timestamp: msg.messageTimestamp,
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000,
+    });
+
+    if (ai?.reply) {
+      await sendChunks(remoteJid, ai.reply, msg);
+      debugLog('[vocal] réponse IA envoyée');
+    } else {
+      debugLog('[vocal] backend a ignoré la transcription');
+    }
+  } catch (err) {
+    debugLog(`[vocal] erreur traitement : ${err.message}`);
   }
 }
 

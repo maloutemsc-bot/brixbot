@@ -30,3 +30,7 @@ backend/instance/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Journaux de conversations et médias temporaires (données runtime)
+whatsapp-bot/transcript.txt
+whatsapp-bot/media_cache/

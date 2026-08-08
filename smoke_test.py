@@ -83,6 +83,19 @@ def main():
     check("GET", "/api/logs")
     check("POST", "/api/logs/clear")
 
+    # ---- Graphiques du tableau de bord (stats par jour) ----
+    check("GET", "/api/stats/chart")
+    check("GET", "/api/stats/chart?days=30")
+
+    # ---- Message vocal (voice=True) avec IA désactivée -> ignoré ----
+    check("POST", "/api/message",
+          json={"body": "transcription d'un vocal", "from": "33600000000",
+                "remoteJid": "33600000000@s.whatsapp.net", "voice": True},
+          headers=BOT_HEADERS)
+
+    # ---- Transcription vocale : refusée sans clé bot ----
+    check("POST", "/api/ai/transcribe", json={"audio": "AAAA"}, expected=(401,))
+
     # ---- Garde-fou : requête sans clé bot doit être refusée ----
     check("POST", "/api/message", json={"body": "bonjour"}, expected=(401,))
 

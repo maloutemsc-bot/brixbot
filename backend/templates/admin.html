@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/admin.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -94,6 +95,19 @@
             <div class="stat-value" id="dash-quota">—</div>
             <div class="stat-label">Quota BrixHub restant</div>
           </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Activité (7 derniers jours)</h3>
+            <p>Messages reçus, réponses IA, vocaux transcrits et erreurs par jour.</p>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart-box"><canvas id="chartActivity"></canvas></div>
+          <div class="chart-box"><canvas id="chartStatus"></canvas></div>
         </div>
       </div>
 
@@ -223,6 +237,14 @@
               <p class="hint">L'IA répond à tous les messages reçus sur WhatsApp</p>
             </div>
             <label class="switch"><input type="checkbox" id="ai-enabled"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row switch-row">
+            <div>
+              <label for="ai-voice">🎤 Transcrire les notes vocales</label>
+              <p class="hint">Les vocaux sont transcrits (Whisper via GROQ) puis l'IA répond au texte transcrit.<br>Nécessite l'IA activée.</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="ai-voice"><span class="slider"></span></label>
           </div>
 
           <div class="form-row">

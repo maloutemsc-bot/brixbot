@@ -711,3 +711,21 @@ details.raw pre {
   .log-meta { display: none; }
   .card { padding: 16px; }
 }
+
+/* ====================== Graphiques (Chart.js) ====================== */
+.chart-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+}
+
+.chart-box {
+  position: relative;
+  height: 280px;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .chart-grid { grid-template-columns: 1fr; }
+  .chart-box { height: 240px; }
+}

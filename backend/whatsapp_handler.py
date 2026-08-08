@@ -2,9 +2,11 @@
 whatsapp_handler.py — Traitement des messages WhatsApp entrants.
 
 Priorité des messages :
+  0. Message vocal transcrit (voice=True) → droit à l'IA (jamais de commande)
   1. .help / .menu → aide générale (tout le monde)
   2. .blacklist / .unblacklist / .me / .stats → commandes propriétaire
   3. .search / .tel → recherche BrixHub (nom ou numéro)
+  3b. .meteo / .traduis / .devise → outils gratuits (sans clé)
   4. .ia (propriétaire) → gestion whitelist + liste noire
   5. IA automatique (si activée ET conversation autorisée) → GROQ
      (la liste noire est PRIORITAIRE : un chat banni est toujours muet)
@@ -18,6 +20,7 @@ import time
 
 import ai_service
 import brixhub_service
+import tools_service
 from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, utc_now_iso
 
 # Message d'aide affiché pour une commande .search incomplète
@@ -39,6 +42,30 @@ USAGE_TEL = (
     "• `.tel 06 12 34 56 78`"
 )
 
+# Message d'aide affiché pour une commande .meteo incomplète
+USAGE_METEO = (
+    "🌦️ *Commande .meteo*\n"
+    "Utilisation : `.meteo [ville]`\n"
+    "Exemple : `.meteo Paris`\n"
+    "Météo en temps réel, gratuite et sans clé API."
+)
+
+# Message d'aide affiché pour une commande .traduis incomplète
+USAGE_TRAD = (
+    "🌐 *Commande .traduis*\n"
+    "Utilisation : `.traduis [texte]`\n"
+    "Exemple : `.traduis Hello, how are you?`\n"
+    "Traduit automatiquement le texte en français."
+)
+
+# Message d'aide affiché pour une commande .devise incomplète
+USAGE_DEVISE = (
+    "💱 *Commande .devise*\n"
+    "Utilisation : `.devise [montant] [devise] [devise]`\n"
+    "Exemple : `.devise 100 EUR USD`\n"
+    "Devises supportées : EUR, USD, GBP, JPY, CHF, CAD, MAD…"
+)
+
 # Message par défaut (réponse automatique sans IA)
 DEFAULT_RESPONSE = (
     "👋 Bonjour ! Je suis un assistant de recherche.\n"
@@ -58,10 +85,16 @@ HELP_TEXT = (
     "🤖 *BrixBot — Commandes*\n"
     "• `.search nom [prénom] [ville]` — chercher une personne\n"
     "• `.tel numéro` — chercher un numéro de téléphone\n"
+    "• `.meteo ville` — météo en temps réel\n"
+    "• `.traduis texte` — traduire en français\n"
+    "• `.devise 100 EUR USD` — conversion de devises\n"
     "• `.me` — mon utilisation et mon état IA\n"
     "• `.stats` — statistiques du bot (propriétaire)\n"
     "• `.blacklist` / `.unblacklist` — silence de l'IA ici (propriétaire)\n"
     "• `.ia` — gestion de l'IA dans cette conversation (propriétaire)\n"
+    "🖼 Envoyez une photo avec la légende `.sticker` pour la transformer en sticker.\n"
+    "🎵 `.yt lien` — télécharge l'audio d'une vidéo YouTube.\n"
+    "🎤 Les notes vocales sont transcrites et reçoivent une réponse IA.\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
 
@@ -233,7 +266,7 @@ def build_label(nom, prenom, ville):
 # --------------------------------------------------------------------------- #
 #  Point d'entrée principal
 # --------------------------------------------------------------------------- #
-def handle_message(body, sender="", remote_jid="", is_group=False):
+def handle_message(body, sender="", remote_jid="", is_group=False, voice=False):
     """
     Traite un message WhatsApp reçu via l'API /api/message.
 
@@ -247,6 +280,35 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
     body = (body or "").strip()
     start = time.perf_counter()
     elapsed = 0.0
+
+    # 0) Message vocal transcrit (note vocale → texte via Whisper).
+    #    On ignore TOUTES les commandes : le texte transcrit va directement
+    #    à l'IA, en respectant la liste noire et la whitelist.
+    if voice:
+        # Garde-fou : transcription vide → rien à envoyer à l'IA
+        if not body:
+            _log_command("VOCAL", "", 0, "ignored", "Transcription vide", 0.0,
+                         is_ai=True, chat=remote_jid, sender=sender)
+            return {"ignore": True}
+        ai_cfg = AIConfig.get()
+        if not ai_cfg.enabled:
+            _log_command("VOCAL", body[:500], 0, "ignored", "IA désactivée", 0.0,
+                         is_ai=True, chat=remote_jid, sender=sender)
+            return {"ignore": True}
+        if _chat_blacklisted(ai_cfg, sender, remote_jid, is_group):
+            _log_command("VOCAL", body[:500], 0, "ignored",
+                         "Conversation sur liste noire (blacklist IA)", 0.0,
+                         is_ai=True, chat=remote_jid, sender=sender)
+            return {"ignore": True}
+        if _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group):
+            return _handle_ai(
+                f"[Note vocale transcrite] {body}", sender, remote_jid, is_group,
+                log_cmd="VOCAL",
+            )
+        _log_command("VOCAL", body[:500], 0, "ignored",
+                     "Conversation non autorisée (whitelist IA)", 0.0,
+                     is_ai=True, chat=remote_jid, sender=sender)
+        return {"ignore": True}
 
     if not body:
         _log_command("MSG", "", 0, "ignored", "Message vide (sans texte)", 0.0,
@@ -273,6 +335,14 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
         return _handle_search(body, remote_jid, sender, is_group, start)
     if re.match(r"^\.tel(?:\s|$)", body, re.IGNORECASE):
         return _handle_tel(body, remote_jid, sender, is_group, start)
+
+    # 3b) Commandes pratiques (gratuites, sans clé API)
+    if re.match(r"^\.meteo(?:\s|$)", body, re.IGNORECASE):
+        return _handle_meteo(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.(?:traduis|traduire|translate)(?:\s|$)", body, re.IGNORECASE):
+        return _handle_translate(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.(?:devise|convert)(?:\s|$)", body, re.IGNORECASE):
+        return _handle_devise(body, remote_jid, sender, is_group, start)
 
     # 4) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
@@ -394,6 +464,78 @@ def _handle_tel(body, remote_jid="", sender="", is_group=False, start=None):
                      chat=remote_jid, sender=sender)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
+
+
+# --------------------------------------------------------------------------- #
+#  Commandes pratiques (.meteo / .traduis / .devise)
+# --------------------------------------------------------------------------- #
+def _handle_meteo(body, remote_jid="", sender="", is_group=False, start=None):
+    """Météo en temps réel d'une ville (Open-Meteo, gratuit, sans clé)."""
+    start = start if start is not None else time.perf_counter()
+    city = re.sub(r"^\.meteo\s*", "", body, flags=re.IGNORECASE).strip()
+
+    if not city:
+        _log_command(".meteo", "", 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": USAGE_METEO}
+
+    try:
+        reply = tools_service.weather(city)
+        _log_command(".meteo", city[:500], 0, "success", "",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": reply}
+    except tools_service.ToolsError as exc:
+        _log_command(".meteo", city[:500], 0, "error", exc.message,
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": f"❌ {exc.message}"}
+
+
+def _handle_translate(body, remote_jid="", sender="", is_group=False, start=None):
+    """Traduit un texte en français (détection automatique de la langue)."""
+    start = start if start is not None else time.perf_counter()
+    text = re.sub(r"^\.(?:traduis|traduire|translate)\s*", "", body,
+                  flags=re.IGNORECASE).strip()
+
+    if not text:
+        _log_command(".traduis", "", 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": USAGE_TRAD}
+
+    try:
+        translated = tools_service.translate(text, target="fr")
+        reply = f"🌐 *Traduction (→ français)*\n💬 {text}\n✨ {translated}"
+        _log_command(".traduis", text[:500], 0, "success", "",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": reply}
+    except tools_service.ToolsError as exc:
+        _log_command(".traduis", text[:500], 0, "error", exc.message,
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": f"❌ {exc.message}"}
+
+
+def _handle_devise(body, remote_jid="", sender="", is_group=False, start=None):
+    """Convertit un montant entre deux devises (taux BCE, gratuit, sans clé)."""
+    start = start if start is not None else time.perf_counter()
+    cmd = body.split()[0].lower()  # ".devise" ou ".convert" (pour les logs)
+    args = re.sub(r"^\.(?:devise|convert)\s*", "", body,
+                  flags=re.IGNORECASE).strip().split()
+
+    if len(args) < 3:
+        _log_command(cmd, " ".join(args)[:500], 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": USAGE_DEVISE}
+
+    amount, source, target = args[0], args[1].upper(), args[2].upper()
+    try:
+        result = tools_service.currency(amount, source, target)
+        reply = f"💱 *Conversion*\n{amount} {source} = *{result} {target}*"
+        _log_command(cmd, f"{amount} {source} {target}", 0, "success", "",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": reply}
+    except tools_service.ToolsError as exc:
+        _log_command(cmd, f"{amount} {source} {target}", 0, "error", exc.message,
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": f"❌ {exc.message}"}
 
 
 # --------------------------------------------------------------------------- #
@@ -725,7 +867,7 @@ def _prune_memory(sender, exchanges):
         db.session.commit()
 
 
-def _handle_ai(body, sender, remote_jid, is_group):
+def _handle_ai(body, sender, remote_jid, is_group, log_cmd="IA"):
     """Répond automatiquement avec GROQ, journalise et met à jour la mémoire."""
     start = time.perf_counter()
     ai_cfg = AIConfig.get()
@@ -739,7 +881,7 @@ def _handle_ai(body, sender, remote_jid, is_group):
         reply, model, tokens, duration_ms = ai_service.chat(body, history=history)
         elapsed = (time.perf_counter() - start) / 1000.0
 
-        _log_command("IA", body[:500], 1, "success", "", elapsed, is_ai=True,
+        _log_command(log_cmd, body[:500], 1, "success", "", elapsed, is_ai=True,
                      chat=remote_jid, sender=sender)
         db.session.add(AILog(
             sender=(sender or "inconnu")[:100],
@@ -759,7 +901,7 @@ def _handle_ai(body, sender, remote_jid, is_group):
         return {"reply": reply}
     except ai_service.AIError as exc:
         elapsed = (time.perf_counter() - start) / 1000.0
-        _log_command("IA", body[:500], 0, "error", exc.message, elapsed, is_ai=True,
+        _log_command(log_cmd, body[:500], 0, "error", exc.message, elapsed, is_ai=True,
                      chat=remote_jid, sender=sender)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}

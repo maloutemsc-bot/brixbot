@@ -18,6 +18,8 @@ Démarrage :
   gunicorn app:app ...       # production
 """
 
+import base64
+import binascii
 import datetime
 import os
 import sys
@@ -284,6 +286,8 @@ def save_ai_config():
         cfg.ai_blacklist = "\n".join(
             line.strip() for line in str(data["ai_blacklist"]).splitlines() if line.strip()
         )
+    if "transcribe_voice" in data:
+        cfg.transcribe_voice = bool(data["transcribe_voice"])
 
     db.session.commit()
     return jsonify({"ok": True, "config": cfg.to_dict()})
@@ -317,6 +321,53 @@ def get_ai_logs():
     limit = min(int(request.args.get("limit", 20)), 100)
     logs = AILog.query.order_by(AILog.id.desc()).limit(limit).all()
     return jsonify([log.to_dict() for log in logs])
+
+
+@app.route("/api/ai/transcribe", methods=["POST"])
+@require_bot_key
+@limiter.limit("60 per minute")
+def transcribe_audio():
+    """
+    Transcrit une note vocale via Whisper (GROQ). Appelé par le bot Node.js
+    quand il reçoit un vocal. Ne transcrit que si l'IA ET la transcription
+    des vocaux sont activées dans l'onglet IA.
+    """
+    data = request.get_json(silent=True) or {}
+    audio_b64 = str(data.get("audio", "") or "")
+    if not audio_b64:
+        return jsonify({"ok": False, "transcribed": False, "error": "Aucun audio reçu."}), 400
+
+    # Garde-fou : limite de taille (base64 ≈ 4/3 du binaire → 34 Mo ≈ 25 Mo)
+    if len(audio_b64) > 34 * 1024 * 1024:
+        return jsonify({"ok": False, "transcribed": False,
+                        "error": "Note vocale trop volumineuse."}), 400
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+    except (binascii.Error, ValueError):
+        return jsonify({"ok": False, "transcribed": False, "error": "Audio invalide."}), 400
+    if not audio_bytes:
+        return jsonify({"ok": False, "transcribed": False, "error": "Audio vide."}), 400
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        return jsonify({"ok": False, "transcribed": False,
+                        "error": "Note vocale trop volumineuse."}), 400
+
+    ai_cfg = AIConfig.get()
+    if not ai_cfg.enabled:
+        return jsonify({"ok": True, "transcribed": False, "reason": "ai_disabled"})
+    if not ai_cfg.transcribe_voice:
+        return jsonify({"ok": True, "transcribed": False, "reason": "voice_disabled"})
+
+    mime = str(data.get("mime", "audio/ogg; codecs=opus")) or "audio/ogg"
+    try:
+        text, duration_ms = ai_service.transcribe(audio_bytes, mime=mime)
+        return jsonify({
+            "ok": True, "transcribed": True,
+            "text": text, "duration_ms": duration_ms,
+        })
+    except ai_service.AIError as exc:
+        # HTTP 200 : le bot journalise l'erreur sans crasher
+        return jsonify({"ok": False, "transcribed": False, "error": exc.message})
 
 
 # --------------------------------------------------------------------------- #
@@ -436,10 +487,65 @@ def incoming_message():
             sender=str(data.get("from", "")),
             remote_jid=str(data.get("remoteJid", "")),
             is_group=bool(data.get("isGroup", False)),
+            voice=bool(data.get("voice", False)),
         )
         return jsonify(result)
     except Exception as exc:  # garde-fou : le bot ne doit jamais crasher
         return jsonify({"reply": "❌ Une erreur interne est survenue. Réessayez plus tard."})
+
+
+# --------------------------------------------------------------------------- #
+#  Statistiques pour les graphiques du tableau de bord
+# --------------------------------------------------------------------------- #
+@app.route("/api/stats/chart")
+@require_admin
+@limiter.limit("30 per minute")
+def stats_chart():
+    """
+    Activité par jour (messages, réponses IA, vocaux, succès, erreurs)
+    sur les N derniers jours (défaut : 7) + totaux par statut pour le camembert.
+    """
+    try:
+        days = max(1, min(90, int(request.args.get("days", 7))))
+    except (TypeError, ValueError):
+        days = 7
+
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    per_day = {}
+    labels = []
+    for offset in range(days - 1, -1, -1):
+        key = (today - datetime.timedelta(days=offset)).isoformat()
+        labels.append(key)
+        per_day[key] = {"total": 0, "ai": 0, "vocal": 0, "success": 0, "error": 0}
+
+    # On ne charge que les colonnes utiles (jamais les corps de messages)
+    rows = CommandLog.query.with_entities(
+        CommandLog.timestamp, CommandLog.status, CommandLog.is_ai, CommandLog.command
+    ).all()
+    for timestamp, status, is_ai, command in rows:
+        key = (timestamp or "")[:10]
+        bucket = per_day.get(key)
+        if bucket is None:
+            continue
+        bucket["total"] += 1
+        bucket["ai"] += 1 if is_ai else 0
+        bucket["vocal"] += 1 if command == "VOCAL" else 0
+        bucket["success"] += 1 if status == "success" else 0
+        bucket["error"] += 1 if status == "error" else 0
+
+    return jsonify({
+        "days": days,
+        "labels": labels,
+        "series": {
+            key: [per_day[day][key] for day in labels]
+            for key in ("total", "ai", "vocal", "success", "error")
+        },
+        "totals": {
+            "success": CommandLog.query.filter_by(status="success").count(),
+            "error": CommandLog.query.filter_by(status="error").count(),
+            "ignored": CommandLog.query.filter_by(status="ignored").count(),
+        },
+    })
 
 
 # --------------------------------------------------------------------------- #

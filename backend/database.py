@@ -89,6 +89,9 @@ class AIConfig(db.Model):
     # Blacklist des conversations bannies (une entrée par ligne).
     # Prioritaire : une conversation listée ici ne reçoit JAMAIS de réponse IA.
     ai_blacklist = db.Column(db.Text, default="", nullable=False)
+    # Transcription des notes vocales : les vocaux sont transcrits (Whisper
+    # via GROQ) puis l'IA répond au texte transcrit.
+    transcribe_voice = db.Column(db.Boolean, default=False, nullable=False)
 
     def to_dict(self):
         return {
@@ -103,6 +106,7 @@ class AIConfig(db.Model):
             "memory_exchanges": self.memory_exchanges,
             "ai_whitelist": self.ai_whitelist or "",
             "ai_blacklist": self.ai_blacklist or "",
+            "transcribe_voice": bool(self.transcribe_voice),
         }
 
     @staticmethod
@@ -227,6 +231,7 @@ def _ensure_columns(app):
             ("memory_exchanges", "INTEGER DEFAULT 5"),
             ("ai_whitelist", "TEXT DEFAULT ''"),
             ("ai_blacklist", "TEXT DEFAULT ''"),
+            ("transcribe_voice", "BOOLEAN DEFAULT 0"),
         ],
         "command_logs": [
             ("chat", "VARCHAR(100) DEFAULT ''"),

@@ -13,6 +13,9 @@ import requests
 from database import AIConfig, DEFAULT_SYSTEM_PROMPT
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+# Modèle de transcription vocale (Whisper, proposé gratuitement par GROQ)
+TRANSCRIBE_MODEL = "whisper-large-v3"
 TIMEOUT = 60
 
 # Modèles proposés dans le panneau (identifiants officiels GROQ).
@@ -48,6 +51,75 @@ def resolve_api_key():
     if not key:
         key = os.environ.get("GROQ_API_KEY", "").strip()
     return key
+
+
+# --------------------------------------------------------------------------- #
+#  Transcription de notes vocales (Whisper via GROQ)
+# --------------------------------------------------------------------------- #
+def transcribe(audio_bytes, mime="audio/ogg"):
+    """
+    Transcrit une note vocale (bytes audio) en texte via Whisper (GROQ).
+
+    Renvoie un tuple : (texte, durée_ms).
+    Lève AIError en cas de problème (clé manquante, quota, API…).
+    """
+    api_key = resolve_api_key()
+    if not api_key:
+        raise AIError(
+            "Aucune clé API GROQ configurée. Renseignez-la dans l'onglet IA du panneau.",
+            is_config=True,
+        )
+    if not audio_bytes:
+        raise AIError("Note vocale vide : rien à transcrire.")
+
+    # L'extension doit correspondre au format réel de l'audio reçu.
+    filename = "audio.ogg"
+    if "mp4" in (mime or "") or "mpeg" in (mime or ""):
+        filename = "audio.m4a"
+    elif "wav" in (mime or ""):
+        filename = "audio.wav"
+    elif "mp3" in (mime or ""):
+        filename = "audio.mp3"
+
+    start = time.perf_counter()
+    try:
+        response = requests.post(
+            GROQ_TRANSCRIBE_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (filename, audio_bytes, mime or "audio/ogg")},
+            data={
+                "model": TRANSCRIBE_MODEL,
+                "language": "fr",  # priorité au français (le bot répond en français)
+                "temperature": 0.0,
+            },
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.Timeout:
+        raise AIError("La transcription a mis trop de temps (timeout).")
+    except requests.exceptions.ConnectionError:
+        raise AIError("Impossible de joindre l'API GROQ (problème réseau).")
+    except requests.exceptions.RequestException as exc:
+        raise AIError("Erreur de communication avec GROQ : %s" % exc.__class__.__name__)
+
+    duration_ms = int((time.perf_counter() - start) * 1000)
+
+    if response.status_code == 200:
+        data = response.json() or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            raise AIError("La transcription est vide. Réessayez avec un vocal plus clair.")
+        return text, duration_ms
+
+    status = response.status_code
+    if status == 401:
+        raise AIError("Clé API GROQ invalide (HTTP 401). Vérifiez votre clé dans l'onglet IA.")
+    if status in (402, 429):
+        raise AIError("Quota ou limite de débit GROQ atteint (HTTP %d)." % status)
+    if status == 404:
+        raise AIError("Le modèle de transcription est indisponible sur GROQ (HTTP 404).")
+    if status == 413:
+        raise AIError("Note vocale trop longue à transcrire (HTTP 413).")
+    raise AIError("Erreur API GROQ lors de la transcription (HTTP %d)." % status)
 
 
 # --------------------------------------------------------------------------- #

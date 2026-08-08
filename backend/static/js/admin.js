@@ -121,6 +121,94 @@
       $('#dash-quota').textContent = data.quota != null ? data.quota : '—';
 
       await renderRecentLogs();
+      renderCharts();
+    } catch (_) { /* le polling reprendra */ }
+  }
+
+  // Graphiques du tableau de bord (Chart.js) : activité par jour + répartition
+  async function renderCharts() {
+    const canvas = $('#chartActivity');
+    if (!canvas || typeof Chart === 'undefined') return; // Chart.js non chargé
+
+    try {
+      const data = await api('/api/stats/chart?days=7');
+      const shortLabel = (iso) => {
+        const parts = iso.split('-');
+        return `${parts[2]}/${parts[1]}`;
+      };
+
+      // Les instances sont mises à jour EN PLACE (pas de destruction/re-création)
+      // pour éviter le scintillement à chaque polling (toutes les 20 s).
+      const activityCfg = {
+        type: 'bar',
+        data: {
+          labels: data.labels.map(shortLabel),
+          datasets: [
+            { label: 'Messages', data: data.series.total, backgroundColor: '#0f3460', borderRadius: 6 },
+            { label: 'Réponses IA', data: data.series.ai, backgroundColor: '#e94560', borderRadius: 6 },
+            { label: 'Vocaux', data: data.series.vocal, backgroundColor: '#22c55e', borderRadius: 6 },
+            { label: 'Erreurs', data: data.series.error, backgroundColor: '#ef4444', borderRadius: 6 },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false, // pas d'animation pendant les mises à jour du polling
+          plugins: {
+            legend: { labels: { color: '#cbd5e1', boxWidth: 12, usePointStyle: true } },
+          },
+          scales: {
+            x: {
+              stacked: false,
+              grid: { color: 'rgba(148,163,184,0.08)' },
+              ticks: { color: '#94a3b8' },
+            },
+            y: {
+              beginAtZero: true,
+              ticks: { color: '#94a3b8', precision: 0 },
+              grid: { color: 'rgba(148,163,184,0.08)' },
+            },
+          },
+        },
+      };
+
+      const statusCfg = {
+        type: 'doughnut',
+        data: {
+          labels: ['✅ Succès', '❌ Erreurs', '🚫 Ignorés'],
+          datasets: [{
+            data: [data.totals.success, data.totals.error, data.totals.ignored],
+            backgroundColor: ['#22c55e', '#ef4444', '#64748b'],
+            borderColor: '#16213e',
+            borderWidth: 3,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: '62%',
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: '#cbd5e1', boxWidth: 12, usePointStyle: true, padding: 14 },
+            },
+          },
+        },
+      };
+
+      if (window._chartActivity) {
+        window._chartActivity.data = activityCfg.data;
+        window._chartActivity.update();
+      } else {
+        window._chartActivity = new Chart(canvas, activityCfg);
+      }
+
+      if (window._chartStatus) {
+        window._chartStatus.data = statusCfg.data;
+        window._chartStatus.update();
+      } else {
+        window._chartStatus = new Chart($('#chartStatus'), statusCfg);
+      }
     } catch (_) { /* le polling reprendra */ }
   }
 
@@ -234,6 +322,7 @@
       $('#ai-memory-count').value = config.memory_exchanges || 5;
       $('#ai-whitelist').value = config.ai_whitelist || '';
       $('#ai-blacklist').value = config.ai_blacklist || '';
+      $('#ai-voice').checked = !!config.transcribe_voice;
 
       await loadAILogs();
     } catch (err) { toast(err.message, 'error'); }
@@ -254,6 +343,7 @@
           memory_exchanges: parseInt($('#ai-memory-count').value, 10) || 5,
           ai_whitelist: $('#ai-whitelist').value,
           ai_blacklist: $('#ai-blacklist').value,
+          transcribe_voice: $('#ai-voice').checked,
         }),
       });
       toast('Configuration IA enregistrée ✅');
