@@ -620,12 +620,30 @@ async function handleStickerCommand(msg, remoteJid) {
  */
 async function handleExtractCommand(msg, remoteJid) {
   const current = msg.message || {};
-  const quoted = current.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
 
-  // Média source : message courant (photo avec légende .extract) ou message cité
-  const source = current.imageMessage
-    ? msg
-    : (quoted ? { ...msg, message: quoted } : null);
+  // Média source : message courant (photo avec légende .extract) ou message cité.
+  // Pour le média cité, on reconstruit une clé correcte (stanzaId + participant) :
+  // le téléchargement direct marche tant que l'URL est valide, et la clé propre
+  // permet le rafraîchissement via updateMediaMessage (médias anciens / groupes).
+  let source;
+  if (current.imageMessage) {
+    source = msg;
+  } else if (quoted) {
+    source = {
+      ...msg,
+      key: {
+        ...msg.key,
+        remoteJid,
+        id: ctx.stanzaId || msg.key.id,
+        participant: ctx.participant || msg.key.participant,
+      },
+      message: quoted,
+    };
+  } else {
+    source = null;
+  }
 
   if (!source) {
     return replyError(remoteJid,
