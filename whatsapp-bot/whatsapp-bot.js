@@ -44,9 +44,8 @@ const {
 let decryptNoiseShown = false;
 function isDecryptNoise(...args) {
   return args.some((a) => typeof a === 'string'
-    && /decrypt message|MessageCounterError|Bad MAC|session_cipher/i.test(a));
-}
-const _origError = console.error;
+    && /decrypt message|MessageCounterError|Bad MAC|session_cipher|closing (open )?session|prekey bundle|incoming prekey/i.test(a));
+}const _origError = console.error;
 const _origWarn = console.warn;
 console.error = (...args) => {
   if (isDecryptNoise(...args)) {
@@ -67,6 +66,18 @@ console.warn = (...args) => {
     return;
   }
   _origWarn(...args);
+};
+const _origInfo = console.info;
+console.info = (...args) => {
+  if (isDecryptNoise(...args)) {
+    // dump de session libsignal ("Closing session: SessionEntry {...}") : ignoré
+    if (!decryptNoiseShown) {
+      decryptNoiseShown = true;
+      _origInfo('ℹ️ Bruit de décryptage ignoré (messages redélivrés par WhatsApp — normal).');
+    }
+    return;
+  }
+  _origInfo(...args);
 };
 
 const FLASK_URL = (process.env.FLASK_INTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
