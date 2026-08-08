@@ -380,6 +380,16 @@ async function startBot() {
     // Messages entrants
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       debugLog(`[upsert] type=${type} nb=${messages.length}`);
+      // Collecte des clés pour la commande .clear (en mémoire, session courante).
+      // Faite pour TOUS les types (y compris les échos de nos propres messages)
+      // afin que .clear puisse aussi supprimer les messages du bot.
+      for (const msg of messages) {
+        const mkey = msg.key || {};
+        if (mkey.remoteJid && mkey.id && mkey.remoteJid !== 'status@broadcast') {
+          if (!chatKeys[mkey.remoteJid]) chatKeys[mkey.remoteJid] = [];
+          if (chatKeys[mkey.remoteJid].length < CLEAR_MAX) chatKeys[mkey.remoteJid].push(mkey);
+        }
+      }
       if (type !== 'notify') return;
       for (const msg of messages) {
         handleMessage(msg).catch((err) => {
@@ -658,6 +668,15 @@ async function handleMessage(msg) {
     debugLog(`[fun] commande : ${trimmed}`);
     handleFunCommand(msg, remoteJid, sender, trimmed).catch((err) => {
       debugLog(`[fun] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .clear : purge des messages de la conversation ---
+  if (/^\.clear\b/i.test(trimmed)) {
+    debugLog(`[clear] commande : ${trimmed}`);
+    handleClearCommand(msg, remoteJid, sender, isGroup, trimmed).catch((err) => {
+      debugLog(`[clear] erreur : ${err.message}`);
     });
     return;
   }
@@ -1926,6 +1945,78 @@ function elapsedLabel(ms) {
 // Anti-spam des notifications AFK : une seule par conversation/membre/30 min
 const AFK_NOTIFY_COOLDOWN = 30 * 60 * 1000;
 const afkNotified = {}; // "groupe|membre" → timestamp
+
+/* -------------------------------------------------------------------------- */
+/*  .clear — purge les messages de la conversation                            */
+/* -------------------------------------------------------------------------- */
+
+// Clés des messages vus par le bot (en mémoire, par conversation) :
+// la commande .clear les supprime pour tout le monde. WhatsApp limite la
+// suppression aux messages de moins de ~2 jours.
+const chatKeys = {}; // { [remoteJid]: [WAMessageKey] }
+const CLEAR_MAX = 200; // nombre max de messages purgés en une commande
+const CLEAR_BATCH = 10; // taille des lots (évite le rate-limit WhatsApp)
+
+/**
+ * .clear — supprime les messages récents de la conversation (pour tout le monde).
+ *   - Groupe  : réservé aux administrateurs.
+ *   - Privé   : réservé au propriétaire (compte lié au bot).
+ * Deux temps : `.clear` affiche le nombre, `.clear oui` confirme et purge.
+ */
+async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
+  // Autorisations
+  if (isGroup) {
+    if (!(await isGroupAdmin(remoteJid, sender))) {
+      return replyError(remoteJid, '🔒 Cette commande est réservée aux administrateurs du groupe.', msg);
+    }
+  } else if (!msg.key.fromMe) {
+    return replyError(remoteJid, '🔒 Cette commande n\'est utilisable que par le propriétaire en message privé.', msg);
+  }
+
+  const keys = chatKeys[remoteJid] || [];
+
+  if (!keys.length) {
+    return replyError(remoteJid,
+      '🧹 Aucun message à purger pour le moment.\n_Seuls les messages vus par le bot depuis son démarrage sont concernés (et de moins de ~2 jours)._', msg);
+  }
+
+  const count = Math.min(keys.length, CLEAR_MAX);
+  if (!/^\s*(oui|yes|confirmer|y)\s*$/i.test(body.replace(/^\.clear\s*/i, ''))) {
+    return replyError(remoteJid,
+      `🧹 *Confirmation requise*\n\n`
+      + `${count} message(s) seront supprimés *pour tout le monde*.\n`
+      + `Tapez \`.clear oui\` pour confirmer.`, msg);
+  }
+
+  const batch = keys.slice(0, count);
+  if (sock) sock.sendMessage(remoteJid, { text: `🧹 Purge de ${batch.length} message(s)…` }).catch(() => {});
+
+  let deleted = 0;
+  try {
+    for (let i = 0; i < batch.length; i += CLEAR_BATCH) {
+      const chunk = batch.slice(i, i + CLEAR_BATCH);
+      await Promise.all(chunk.map((k) =>
+        sock.sendMessage(remoteJid, { delete: k })
+          .then(() => { deleted += 1; })
+          .catch(() => { /* message déjà supprimé, trop vieux, ou droits insuffisants */ })
+      ));
+      if (i + CLEAR_BATCH < batch.length) await sleep(400); // espacement anti-rate-limit
+    }
+  } catch (err) {
+    debugLog(`[clear] interruption : ${err.message}`);
+  }
+
+  // On retire de la liste les messages traités
+  const processed = new Set(batch.map((k) => k.id));
+  chatKeys[remoteJid] = keys.filter((k) => !processed.has(k.id));
+
+  await sock.sendMessage(remoteJid, {
+    text: `✅ ${deleted}/${batch.length} messages supprimés pour tout le monde.\n`
+      + '⚠️ WhatsApp limite la suppression aux messages de moins de ~2 jours.',
+  }, { quoted: msg });
+  debugLog(`[clear] ${deleted}/${batch.length} supprimés dans ${remoteJid}`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧹 [purge ${deleted}/${batch.length}]`);
+}
 
 /**
  * Signale à l'expéditeur qu'il écrit à / mentionne un membre absent (AFK).

@@ -105,6 +105,7 @@ HELP_TEXT = (
     "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall` · `.link` · `.close` · `.open` · `.revoke`\n"
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
+    "🧹 `.clear` — purge les messages récents de la conversation (admin en groupe, proprio en privé)\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
