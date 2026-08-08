@@ -88,44 +88,39 @@ def _map_error(status_code, body=""):
 # --------------------------------------------------------------------------- #
 #  Recherche
 # --------------------------------------------------------------------------- #
-def _build_payloads(nom_famille, prenom, ville, flexible, max_results):
+def _build_payloads(nom_famille, prenom, ville, telephone, flexible, max_results):
     """
     Construit la liste des requêtes à essayer.
 
     Si la recherche flexible est activée, on commence par tous les critères
     puis on retire progressivement ville puis prénom pour maximiser les chances
-    de trouver un résultat.
+    de trouver un résultat. Une recherche par téléphone seul n'a pas de repli.
     """
-    base = {"nom_famille": nom_famille, "per_page": max_results}
-
-    full = dict(base)
+    base = {"per_page": max_results, "flexible": True}
+    if nom_famille:
+        base["nom_famille"] = nom_famille
     if prenom:
-        full["prenom"] = prenom
+        base["prenom"] = prenom
     if ville:
-        full["ville"] = ville
-    full["flexible"] = True
+        base["ville"] = ville
+    if telephone:
+        base["telephone"] = telephone
 
     if not flexible:
-        return [full]
+        return [base]
 
-    variants = [full]
+    # Recherche par numéro uniquement : pas de critère à retirer
+    if telephone and not nom_famille:
+        return [base]
+
+    variants = [base]
 
     # nom + prénom (sans ville)
-    np = dict(base)
-    if prenom:
-        np["prenom"] = prenom
-    np["flexible"] = True
-    variants.append(np)
-
+    variants.append({key: value for key, value in base.items() if key != "ville"})
     # nom + ville (sans prénom)
-    nv = dict(base)
-    if ville:
-        nv["ville"] = ville
-    nv["flexible"] = True
-    variants.append(nv)
-
+    variants.append({key: value for key, value in base.items() if key != "prenom"})
     # nom seul
-    variants.append({**base, "flexible": True})
+    variants.append({key: value for key, value in base.items() if key not in ("prenom", "ville")})
 
     # Déduplication : évite les appels API redondants quand prénom/ville manquent
     seen = set()
@@ -139,7 +134,9 @@ def _build_payloads(nom_famille, prenom, ville, flexible, max_results):
 
 
 def _label(payload):
-    """Libellé humain de la requête envoyée (ex: "Dupont Jean (Paris)")."""
+    """Libellé humain de la requête envoyée (ex: "Dupont Jean (Paris)" ou le numéro)."""
+    if payload.get("telephone") and not payload.get("nom_famille"):
+        return str(payload["telephone"])
     parts = [payload.get("nom_famille", "")]
     if payload.get("prenom"):
         parts.append(payload["prenom"])
@@ -149,9 +146,9 @@ def _label(payload):
     return label or "recherche"
 
 
-def search(nom_famille, prenom=None, ville=None, flexible=None, max_results=None):
+def search(nom_famille=None, prenom=None, ville=None, telephone=None, flexible=None, max_results=None):
     """
-    Recherche une personne sur BrixHub.
+    Recherche une personne sur BrixHub (par nom, prénom, ville et/ou téléphone).
 
     Renvoie un dict : {results, meta, remaining_quota, used_payload, query_label}
     Lève BrixHubError en cas de problème.
@@ -171,7 +168,7 @@ def search(nom_famille, prenom=None, ville=None, flexible=None, max_results=None
             is_config=True,
         )
 
-    payloads = _build_payloads(nom_famille, prenom, ville, flexible, max_results)
+    payloads = _build_payloads(nom_famille, prenom, ville, telephone, flexible, max_results)
     last_error = None
 
     for payload in payloads:

@@ -18,6 +18,7 @@ services:
     environment:
       SECRET_KEY: ${SECRET_KEY:-changez-moi-cette-cle}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      OWNER_NUMBER: ${OWNER_NUMBER:-}
       BRIX_API_KEY: ${BRIX_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       BOT_API_KEY: ${BOT_API_KEY:-changez-moi-bot}

@@ -325,10 +325,25 @@ docker compose logs -f bot
 
 **Priorité des messages reçus :**
 
-1. Message commençant par `.search` → recherche BrixHub
-2. Sinon, si l'**IA est activée** → réponse automatique GROQ (en français)
-3. Sinon, si la **réponse automatique** est activée → message d'aide par défaut
-4. Sinon → message ignoré
+1. `.search` ou `.tel` → recherche BrixHub (par nom ou par numéro)
+2. `.ia` → gestion de la whitelist IA (réservée au propriétaire `OWNER_NUMBER`)
+3. Sinon, si l'**IA est activée** **et** que la conversation est autorisée → GROQ (en français)
+4. Sinon, si la **réponse automatique** est activée → message d'aide par défaut
+5. Sinon → message ignoré
+
+**Commandes disponibles :**
+
+| Commande | Description |
+|---|---|
+| `.search nom [prénom] [ville]` | Recherche par nom sur BrixHub |
+| `.tel 06 12 34 56 78` | Recherche par numéro de téléphone |
+| `.ia oui` / `.ia non` | Active/désactive l'IA pour cette conversation (propriétaire) |
+| `.ia liste` | Liste les conversations où l'IA est active |
+
+**Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
+réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout
+le monde ; sinon, elle ne répond que dans les conversations listées (numéros ou
+identifiants de groupe, réglables dans le panneau ou via `.ia oui`).
 
 **Formatage des réponses `.search` :**
 

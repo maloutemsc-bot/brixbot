@@ -3,9 +3,10 @@ database.py — Modèles SQLAlchemy et initialisation de la base SQLite.
 
 Tables :
   - bot_config   : configuration générale du bot (.search / BrixHub)
-  - ai_config    : configuration de l'IA (GROQ)
+  - ai_config    : configuration de l'IA (GROQ + mémoire + whitelist)
   - command_logs : historique des commandes traitées
   - ai_logs      : historique des conversations IA
+  - ai_memory    : mémoire de conversation (contexte par utilisateur)
 """
 
 from datetime import datetime, timezone
@@ -68,7 +69,7 @@ class BotConfig(db.Model):
 #  AIConfig — configuration de l'IA (GROQ)
 # --------------------------------------------------------------------------- #
 class AIConfig(db.Model):
-    """Configuration de l'IA (clé API GROQ, modèle, prompt, température...)."""
+    """Configuration de l'IA (clé API GROQ, modèle, prompt, mémoire, whitelist…)."""
 
     __tablename__ = "ai_config"
 
@@ -79,6 +80,12 @@ class AIConfig(db.Model):
     system_prompt = db.Column(db.Text, default=DEFAULT_SYSTEM_PROMPT, nullable=False)
     temperature = db.Column(db.Float, default=0.7, nullable=False)
     max_tokens = db.Column(db.Integer, default=1024, nullable=False)
+    # Mémoire de conversation : garde le contexte par utilisateur
+    memory_enabled = db.Column(db.Boolean, default=True, nullable=False)
+    memory_exchanges = db.Column(db.Integer, default=5, nullable=False)
+    # Whitelist des conversations autorisées (une entrée par ligne).
+    # Vide = l'IA répond à tout le monde.
+    ai_whitelist = db.Column(db.Text, default="", nullable=False)
 
     def to_dict(self):
         return {
@@ -89,6 +96,9 @@ class AIConfig(db.Model):
             "system_prompt": (self.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "memory_enabled": bool(self.memory_enabled),
+            "memory_exchanges": self.memory_exchanges,
+            "ai_whitelist": self.ai_whitelist or "",
         }
 
     @staticmethod
@@ -106,12 +116,12 @@ class AIConfig(db.Model):
 #  CommandLog — historique des commandes
 # --------------------------------------------------------------------------- #
 class CommandLog(db.Model):
-    """Trace de chaque commande traitée (.search ou réponse IA)."""
+    """Trace de chaque commande traitée (.search, .tel ou réponse IA)."""
 
     __tablename__ = "command_logs"
 
     id = db.Column(db.Integer, primary_key=True)
-    command = db.Column(db.String(50), nullable=False)      # ".search" | "IA"
+    command = db.Column(db.String(50), nullable=False)      # ".search" | ".tel" | "IA"
     # NB : l'attribut Python s'appelle query_text pour ne pas masquer la
     # propriété SQLAlchemy "query" des modèles ; la colonne SQL reste "query".
     query_text = db.Column("query", db.String(500), default="")  # requête brute reçue
@@ -121,6 +131,7 @@ class CommandLog(db.Model):
     response_time = db.Column(db.Float, default=0.0)        # temps de réponse (secondes)
     timestamp = db.Column(db.String(40), default=utc_now_iso)
     is_ai = db.Column(db.Boolean, default=False)            # True si généré par l'IA
+    chat = db.Column(db.String(100), default="")            # conversation (jid)
 
     def to_dict(self):
         return {
@@ -133,6 +144,7 @@ class CommandLog(db.Model):
             "response_time": round(self.response_time or 0.0, 3),
             "timestamp": self.timestamp,
             "is_ai": bool(self.is_ai),
+            "chat": self.chat or "",
         }
 
 
@@ -167,12 +179,61 @@ class AILog(db.Model):
 
 
 # --------------------------------------------------------------------------- #
-#  Initialisation
+#  AIMemory — mémoire de conversation (contexte par utilisateur)
 # --------------------------------------------------------------------------- #
+class AIMemory(db.Model):
+    """Message mémorisé pour garder le contexte d'une conversation IA."""
+
+    __tablename__ = "ai_memory"
+
+    id = db.Column(db.Integer, primary_key=True)
+    sender = db.Column(db.String(100), default="", nullable=False)
+    role = db.Column(db.String(10), default="user", nullable=False)  # "user" | "assistant"
+    content = db.Column(db.Text, default="", nullable=False)
+    timestamp = db.Column(db.String(40), default=utc_now_iso)
+
+
+# --------------------------------------------------------------------------- #
+#  Initialisation + migration légère
+# --------------------------------------------------------------------------- #
+def _ensure_columns(app):
+    """
+    Ajoute les colonnes manquantes aux tables existantes (migration légère SQLite).
+
+    Permet de mettre à jour une base créée par une ancienne version du bot
+    sans perdre les données (logs, configuration).
+    """
+    inspector = db.inspect(db.engine)
+
+    def add_column(table, column_name, definition):
+        existing = [column["name"] for column in inspector.get_columns(table)]
+        if column_name not in existing:
+            with db.engine.begin() as conn:
+                conn.execute(db.text(
+                    f"ALTER TABLE {table} ADD COLUMN {column_name} {definition}"
+                ))
+            print(f"[migration] Colonne {table}.{column_name} ajoutée")
+
+    # Nouveautés de la version avec mémoire + whitelist
+    for table, columns in {
+        "ai_config": [
+            ("memory_enabled", "BOOLEAN DEFAULT 1"),
+            ("memory_exchanges", "INTEGER DEFAULT 5"),
+            ("ai_whitelist", "TEXT DEFAULT ''"),
+        ],
+        "command_logs": [
+            ("chat", "VARCHAR(100) DEFAULT ''"),
+        ],
+    }.items():
+        for column_name, definition in columns:
+            add_column(table, column_name, definition)
+
+
 def init_db(app):
     """Initialise la base de données et garantit l'existence des lignes de config."""
     db.init_app(app)
     with app.app_context():
         db.create_all()
+        _ensure_columns(app)
         BotConfig.get()
         AIConfig.get()

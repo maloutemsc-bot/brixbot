@@ -53,9 +53,12 @@ def resolve_api_key():
 # --------------------------------------------------------------------------- #
 #  Chat
 # --------------------------------------------------------------------------- #
-def chat(user_message):
+def chat(user_message, history=None):
     """
-    Envoie un message à GROQ.
+    Envoie un message à GROQ, avec un éventuel historique de conversation.
+
+    history : liste optionnelle de dicts {"role": "user"|"assistant", "content": ...}
+              injectés avant le message courant (mémoire de conversation).
 
     Renvoie un tuple : (réponse, modèle, tokens_utilisés, durée_ms).
     Lève AIError en cas de problème.
@@ -72,12 +75,14 @@ def chat(user_message):
     max_tokens = max(1, min(8192, int(cfg.max_tokens or 1024)))
     system_prompt = (cfg.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
 
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history[-20:])  # sécurité : on borne l'historique envoyé
+    messages.append({"role": "user", "content": user_message})
+
     payload = {
         "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }

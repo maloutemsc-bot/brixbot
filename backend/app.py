@@ -265,6 +265,18 @@ def save_ai_config():
             cfg.max_tokens = max(1, min(8192, int(data["max_tokens"])))
         except (TypeError, ValueError):
             pass
+    if "memory_enabled" in data:
+        cfg.memory_enabled = bool(data["memory_enabled"])
+    if "memory_exchanges" in data:
+        try:
+            cfg.memory_exchanges = max(1, min(20, int(data["memory_exchanges"])))
+        except (TypeError, ValueError):
+            pass
+    if "ai_whitelist" in data:
+        # Nettoie : une entrée par ligne, sans lignes vides
+        cfg.ai_whitelist = "\n".join(
+            line.strip() for line in str(data["ai_whitelist"]).splitlines() if line.strip()
+        )
 
     db.session.commit()
     return jsonify({"ok": True, "config": cfg.to_dict()})
@@ -391,7 +403,8 @@ def test_search():
         result = brixhub_service.search(
             nom, prenom, ville, flexible=flexible, max_results=per_page
         )
-        formatted = whatsapp_handler.format_results(result, nom, prenom, ville)
+        label = whatsapp_handler.build_label(nom, prenom, ville)
+        formatted = whatsapp_handler.format_results(result, label, hint=f".search {nom}")
         return jsonify({"ok": True, "result": result, "formatted": formatted})
     except brixhub_service.BrixHubError as exc:
         return jsonify({"ok": False, "error": exc.message}), 400

@@ -230,6 +230,9 @@
       $('#ai-temp').value = config.temperature ?? 0.7;
       $('#ai-temp-value').textContent = Number(config.temperature ?? 0.7).toFixed(2);
       $('#ai-tokens').value = config.max_tokens || 1024;
+      $('#ai-memory').checked = !!config.memory_enabled;
+      $('#ai-memory-count').value = config.memory_exchanges || 5;
+      $('#ai-whitelist').value = config.ai_whitelist || '';
 
       await loadAILogs();
     } catch (err) { toast(err.message, 'error'); }
@@ -246,6 +249,9 @@
           system_prompt: $('#ai-prompt').value.trim(),
           temperature: parseFloat($('#ai-temp').value),
           max_tokens: parseInt($('#ai-tokens').value, 10) || 1024,
+          memory_enabled: $('#ai-memory').checked,
+          memory_exchanges: parseInt($('#ai-memory-count').value, 10) || 5,
+          ai_whitelist: $('#ai-whitelist').value,
         }),
       });
       toast('Configuration IA enregistrée ✅');
@@ -316,7 +322,7 @@
       const body = $('#logs-body');
 
       if (!data.logs.length) {
-        body.innerHTML = '<tr><td colspan="7" class="empty">Aucune commande enregistrée.</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="empty">Aucune commande enregistrée.</td></tr>';
       } else {
         body.innerHTML = data.logs.map((log) => `
           <tr>
@@ -327,6 +333,7 @@
             <td>${log.results_count}</td>
             <td class="nowrap">${Math.round(log.response_time * 1000)} ms</td>
             <td class="trunc">${esc(log.error || '')}</td>
+            <td class="trunc" title="${esc(log.chat || '')}">${esc(log.chat || '—')}</td>
           </tr>`).join('');
       }
 

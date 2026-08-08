@@ -72,7 +72,14 @@ def main():
     check("POST", "/api/config", json={"max_results": 15, "command_enabled": True})
     check("GET", "/api/ai/config")
     check("GET", "/api/ai/models")
-    check("POST", "/api/ai/config", json={"temperature": 0.8, "max_tokens": 1024})
+    check("POST", "/api/ai/config", json={
+        "temperature": 0.8,
+        "max_tokens": 1024,
+        "memory_enabled": True,
+        "memory_exchanges": 5,
+        "ai_whitelist": "0612345678\n123456789@g.us",
+    })
+    check("GET", "/api/ai/config")
     check("GET", "/api/logs")
     check("POST", "/api/logs/clear")
 
@@ -82,6 +89,41 @@ def main():
     # ---- Message sans clé BrixHub -> réponse d'erreur propre (200 côté bot) ----
     check("POST", "/api/message", json={"body": ".search Dupont", "from": "33600000000"},
           headers=BOT_HEADERS)
+
+    # ---- Nouvelles commandes : .tel et .ia ----
+    check("POST", "/api/message",
+          json={"body": ".tel 06 12 34 56 78", "from": "33600000000"},
+          headers=BOT_HEADERS)
+    check("POST", "/api/message",
+          json={"body": ".ia oui", "from": "33600000000",
+                "remoteJid": "33600000000@s.whatsapp.net"},
+          headers=BOT_HEADERS)
+
+    # ---- Tests unitaires des helpers (whitelist, téléphone, label) ----
+    from whatsapp_handler import _chat_allowed, _parse_phone, build_label  # noqa: E402
+    assert _parse_phone("06 12 34 56 78") == "0612345678"
+    assert _parse_phone("+33 6 12 34 56 78") == "+33612345678"
+    assert build_label("Dupont", "Jean", "Paris") == "Dupont Jean (Paris)"
+    # Whitelist vide = tout le monde
+    assert _chat_allowed("", "33600000000@s.whatsapp.net", "33600000000@s.whatsapp.net") is True
+    # DM : l'expéditeur == la conversation. Numéro simple (chiffres) correspond au jid.
+    assert _chat_allowed("0612345678", "33612345678:15@s.whatsapp.net",
+                         "33612345678@s.whatsapp.net") is True
+    # Jid complet (numéro local normalisé vers 336...)
+    assert _chat_allowed("0612345678@s.whatsapp.net", "33612345678@s.whatsapp.net",
+                         "33612345678@s.whatsapp.net") is True
+    # Numéro non autorisé
+    assert _chat_allowed("0612345678", "33999999999@s.whatsapp.net",
+                         "33999999999@s.whatsapp.net") is False
+    # Dans un groupe : seul le groupe compte (un contact listé ne suffit pas)
+    assert _chat_allowed("0612345678", "33612345678@s.whatsapp.net",
+                         "999@g.us", is_group=True) is False
+    assert _chat_allowed("999@g.us", "33612345678@s.whatsapp.net",
+                         "999@g.us", is_group=True) is True
+    # Un jid de groupe ne s'applique pas aux messages privés
+    assert _chat_allowed("999@g.us", "33612345678@s.whatsapp.net",
+                         "33612345678@s.whatsapp.net") is False
+    print("[OK] Helpers : _parse_phone / build_label / _chat_allowed")
 
     # ---- Statut WhatsApp (mise à jour + lecture) ----
     check("POST", "/api/whatsapp/status", json={"status": "connected", "number": "33600000000"},

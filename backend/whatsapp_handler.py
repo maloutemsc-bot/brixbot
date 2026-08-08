@@ -2,21 +2,23 @@
 whatsapp_handler.py — Traitement des messages WhatsApp entrants.
 
 Priorité des messages :
-  1. La commande ".search ..." → recherche BrixHub
-  2. Sinon, si l'IA est activée → réponse automatique GROQ
-  3. Sinon, si la réponse automatique est activée → message d'aide par défaut
-  4. Sinon → le message est ignoré
+  1. Commandes .search / .tel → recherche BrixHub (nom ou numéro)
+  2. Commande .ia (réservée au propriétaire) → gestion de la whitelist IA
+  3. IA automatique (si activée ET conversation autorisée) → GROQ
+  4. Réponse automatique par défaut
+  5. Sinon → le message est ignoré
 """
 
+import os
 import re
 import time
 
 import ai_service
 import brixhub_service
-from database import AIConfig, AILog, BotConfig, CommandLog, db, utc_now_iso
+from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, utc_now_iso
 
 # Message d'aide affiché pour une commande .search incomplète
-USAGE_TEXT = (
+USAGE_SEARCH = (
     "📚 *Commande .search*\n"
     "Utilisation : `.search nom [prénom] [ville]`\n"
     "Exemples :\n"
@@ -25,12 +27,149 @@ USAGE_TEXT = (
     "• `.search Dupont Jean Paris`"
 )
 
+# Message d'aide affiché pour une commande .tel incomplète
+USAGE_TEL = (
+    "📞 *Commande .tel*\n"
+    "Utilisation : `.tel [numéro]`\n"
+    "Exemples :\n"
+    "• `.tel 0612345678`\n"
+    "• `.tel 06 12 34 56 78`"
+)
+
 # Message par défaut (réponse automatique sans IA)
 DEFAULT_RESPONSE = (
     "👋 Bonjour ! Je suis un assistant de recherche.\n"
     "Utilisez la commande `.search nom [prénom] [ville]` pour trouver des informations.\n\n"
     "Exemple : `.search Dupont Jean Paris`"
 )
+
+
+# --------------------------------------------------------------------------- #
+#  Utilitaires
+# --------------------------------------------------------------------------- #
+def _digits(value):
+    """Extrait uniquement les chiffres d'une chaîne (pour comparer les numéros)."""
+    return re.sub(r"\D", "", value or "")
+
+
+def _phone_key(digits):
+    """
+    Normalise un numéro français local (06... / 07...) au format international
+    (336... / 337...) pour permettre des comparaisons cohérentes.
+    """
+    digits = digits or ""
+    if len(digits) == 10 and digits.startswith("0"):
+        return "33" + digits[1:]
+    return digits
+
+
+def _jid_local(value):
+    """
+    Partie locale d'un identifiant WhatsApp, sans le suffixe d'appareil.
+    Ex : "33612345678:15@s.whatsapp.net" -> "33612345678".
+    """
+    if not value:
+        return ""
+    return (str(value).split("@")[0].split(":")[0] or "").lower()
+
+
+def _is_owner(sender):
+    """
+    Vrai si l'expéditeur est le propriétaire du bot (variable OWNER_NUMBER).
+
+    OWNER_NUMBER accepte le format local (0612345678) ou international (33612345678).
+    """
+    owner = os.environ.get("OWNER_NUMBER", "").strip()
+    if not owner:
+        return False
+    owner_key = _phone_key(_digits(owner))
+    return bool(owner_key) and owner_key == _phone_key(_digits(sender))
+
+
+def _whitelist_list(ai_cfg):
+    """Convertit le champ texte ai_whitelist en liste d'entrées nettoyées."""
+    if not ai_cfg or not ai_cfg.ai_whitelist:
+        return []
+    return [
+        line.strip()
+        for line in str(ai_cfg.ai_whitelist).splitlines()
+        if line.strip()
+    ]
+
+
+def _entry_matches(entry, sender_local, chat_local, sender_key, chat_key):
+    """
+    Vrai si une entrée de la liste (numéro ou identifiant) correspond
+    à l'expéditeur ou à la conversation. La normalisation téléphone est
+    appliquée dans les deux branches pour rester cohérent.
+    """
+    if "@" in entry:  # identifiant complet (ex: 336...@s.whatsapp.net ou groupe@g.us)
+        entry_local = _jid_local(entry)
+        if entry_local and (entry_local == sender_local or entry_local == chat_local):
+            return True
+        entry_key = _phone_key(_digits(entry_local))
+        return bool(entry_key) and (entry_key == sender_key or entry_key == chat_key)
+    # simple numéro (ex: 0612345678)
+    entry_key = _phone_key(_digits(entry))
+    return bool(entry_key) and (entry_key == sender_key or entry_key == chat_key)
+
+
+def _chat_allowed(whitelist_text, sender, remote_jid, is_group=False):
+    """
+    Détermine si l'IA peut répondre dans cette conversation.
+
+    - Whitelist vide → l'IA répond à tout le monde (comportement par défaut).
+    - En message privé : on teste l'expéditeur.
+    - Dans un groupe : seul le groupe est pris en compte (un contact listé
+      dans la whitelist n'active pas l'IA dans tous les groupes).
+    """
+    entries = [
+        line.strip()
+        for line in (whitelist_text or "").splitlines()
+        if line.strip()
+    ]
+    if not entries:
+        return True
+
+    sender_local = _jid_local(sender)
+    chat_local = _jid_local(remote_jid)
+    sender_key = _phone_key(_digits(sender_local))
+    chat_key = _phone_key(_digits(chat_local))
+
+    if is_group:
+        # Dans un groupe : seule l'identité du groupe est prise en compte
+        return any(
+            _entry_matches(entry, "", chat_local, "", chat_key)
+            for entry in entries
+        )
+
+    # En message privé : l'expéditeur et la conversation sont identiques
+    return any(
+        _entry_matches(entry, sender_local, sender_local, sender_key, sender_key)
+        for entry in entries
+    )
+
+
+def _parse_query(query):
+    """Découpe une requête .search en (nom, prénom, ville)."""
+    parts = query.split()
+    nom = parts[0] if parts else ""
+    prenom = parts[1] if len(parts) > 1 else ""
+    ville = " ".join(parts[2:]) if len(parts) > 2 else ""
+    return nom, prenom, ville
+
+
+def _parse_phone(query):
+    """Nettoie un numéro de téléphone (garde uniquement chiffres et +)."""
+    return re.sub(r"[^\d+]", "", query or "")
+
+
+def build_label(nom, prenom, ville):
+    """Libellé humain d'une recherche (ex: "Dupont Jean (Paris)")."""
+    label = " ".join(part for part in (nom, prenom) if part)
+    if ville:
+        label += f" ({ville})"
+    return label or "recherche"
 
 
 # --------------------------------------------------------------------------- #
@@ -48,39 +187,35 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
     if not body:
         return {"ignore": True}
 
-    # 1) Commande .search — le préfixe doit être suivi d'un espace (ou rien)
-    #    pour ne pas confondre ".searching" ou ".searchX" avec une commande.
+    # 1) Commandes de recherche BrixHub
     if re.match(r"^\.search(?:\s|$)", body, re.IGNORECASE):
-        return _handle_search(body)
+        return _handle_search(body, remote_jid)
+    if re.match(r"^\.tel(?:\s|$)", body, re.IGNORECASE):
+        return _handle_tel(body, remote_jid)
 
-    # 2) IA automatique
+    # 2) Commande de contrôle .ia (réservée au propriétaire)
+    if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE) and _is_owner(sender):
+        return _handle_ia(body, sender, remote_jid)
+
+    # 3) IA automatique (si activée et conversation autorisée)
     ai_cfg = AIConfig.get()
-    if ai_cfg.enabled:
+    if ai_cfg.enabled and _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group):
         return _handle_ai(body, sender, remote_jid, is_group)
 
-    # 3) Réponse par défaut
+    # 4) Réponse par défaut
     bot_cfg = BotConfig.get()
     if bot_cfg.auto_response:
         return {"reply": DEFAULT_RESPONSE}
 
-    # 4) Ignorer
+    # 5) Ignorer
     return {"ignore": True}
 
 
 # --------------------------------------------------------------------------- #
 #  Commande .search
 # --------------------------------------------------------------------------- #
-def _parse_query(query):
-    """Découpe la requête en (nom, prénom, ville)."""
-    parts = query.split()
-    nom = parts[0] if parts else ""
-    prenom = parts[1] if len(parts) > 1 else ""
-    ville = " ".join(parts[2:]) if len(parts) > 2 else ""
-    return nom, prenom, ville
-
-
-def _handle_search(body):
-    """Exécute une recherche BrixHub et renvoie le message de réponse."""
+def _handle_search(body, remote_jid=""):
+    """Exécute une recherche par nom et renvoie le message de réponse."""
     cfg = BotConfig.get()
     query = re.sub(r"^\.search\s*", "", body, flags=re.IGNORECASE).strip()
     start = time.perf_counter()
@@ -90,37 +225,116 @@ def _handle_search(body):
 
     nom, prenom, ville = _parse_query(query)
     if not nom:
-        return {"reply": USAGE_TEXT}
+        return {"reply": USAGE_SEARCH}
 
     try:
         result = brixhub_service.search(nom, prenom, ville)
         elapsed = time.perf_counter() - start
-        reply = format_results(result, nom, prenom, ville, elapsed)
-        _log_command(
-            ".search", query, len(result["results"]), "success", "",
-            elapsed, is_ai=False,
-        )
+        label = build_label(nom, prenom, ville)
+        reply = format_results(result, label, elapsed, hint=f".search {nom}")
+        _log_command(".search", query, len(result["results"]), "success", "",
+                     elapsed, chat=remote_jid)
         return {"reply": reply}
     except brixhub_service.BrixHubError as exc:
         elapsed = time.perf_counter() - start
-        _log_command(".search", query, 0, "error", exc.message, elapsed, is_ai=False)
+        _log_command(".search", query, 0, "error", exc.message, elapsed, chat=remote_jid)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
 
 
-def format_results(result, nom, prenom, ville, elapsed=0.0):
+# --------------------------------------------------------------------------- #
+#  Commande .tel
+# --------------------------------------------------------------------------- #
+def _handle_tel(body, remote_jid=""):
+    """Exécute une recherche par numéro de téléphone et renvoie la réponse."""
+    cfg = BotConfig.get()
+    query = re.sub(r"^\.tel\s*", "", body, flags=re.IGNORECASE).strip()
+    start = time.perf_counter()
+
+    if not cfg.command_enabled:
+        return {"reply": "❌ La commande `.tel` est actuellement désactivée par l'administrateur."}
+
+    number = _parse_phone(query)
+    if not number:
+        return {"reply": USAGE_TEL}
+
+    try:
+        result = brixhub_service.search(telephone=number)
+        elapsed = time.perf_counter() - start
+        reply = format_results(result, number, elapsed, hint=f".tel {number}")
+        _log_command(".tel", query, len(result["results"]), "success", "",
+                     elapsed, chat=remote_jid)
+        return {"reply": reply}
+    except brixhub_service.BrixHubError as exc:
+        elapsed = time.perf_counter() - start
+        _log_command(".tel", query, 0, "error", exc.message, elapsed, chat=remote_jid)
+        prefix = "⚠️ " if exc.is_config else "❌ "
+        return {"reply": f"{prefix}{exc.message}"}
+
+
+# --------------------------------------------------------------------------- #
+#  Commande .ia (whitelist, réservée au propriétaire)
+# --------------------------------------------------------------------------- #
+def _handle_ia(body, sender, remote_jid):
+    """Active/désactive l'IA pour la conversation courante, ou affiche l'état."""
+    ai_cfg = AIConfig.get()
+    entries = _whitelist_list(ai_cfg)
+    parts = body.split()
+    action = parts[1].lower() if len(parts) > 1 else ""
+    chat_key = remote_jid or sender
+
+    def save_whitelist():
+        ai_cfg.ai_whitelist = "\n".join(entries)
+        db.session.commit()
+
+    if action in ("oui", "on", "add", "ajouter", "activer", "1"):
+        if chat_key not in entries:
+            entries.append(chat_key)
+            save_whitelist()
+            return {"reply": "✅ IA activée pour cette conversation."}
+        return {"reply": "ℹ️ L'IA est déjà active pour cette conversation."}
+
+    if action in ("non", "off", "remove", "retirer", "desactiver", "0"):
+        if chat_key in entries:
+            entries.remove(chat_key)
+            save_whitelist()
+            return {"reply": "❌ IA désactivée pour cette conversation."}
+        if not entries:
+            return {"reply": "ℹ️ L'IA répond actuellement à tout le monde. "
+                             "Ajoutez d'abord une liste dans le panneau, onglet IA, "
+                             "pour pouvoir l'exclure ici."}
+        return {"reply": "ℹ️ L'IA n'était pas active pour cette conversation."}
+
+    if action in ("liste", "list", "status", "etat"):
+        if not entries:
+            return {"reply": "📋 Whitelist IA vide : l'IA répond à tout le monde."}
+        return {"reply": "📋 Conversations où l'IA est active :\n" +
+                         "\n".join(f"• {entry}" for entry in entries)}
+
+    active = chat_key in entries or not entries
+    return {"reply": (
+        "🤖 *Commandes IA*\n"
+        "• `.ia` — état de cette conversation\n"
+        "• `.ia oui` — activer l'IA ici\n"
+        "• `.ia non` — désactiver l'IA ici\n"
+        "• `.ia liste` — voir la liste complète\n\n"
+        f"État actuel pour cette conversation : "
+        f"{'✅ active' if active else '❌ inactive'}."
+    )}
+
+
+# --------------------------------------------------------------------------- #
+#  Formatage des résultats BrixHub
+# --------------------------------------------------------------------------- #
+def format_results(result, label, elapsed=0.0, hint=None):
     """
     Formate les résultats BrixHub en message WhatsApp lisible.
 
-    Utilisé à la fois par le flux WhatsApp et par l'onglet "Test API" du panneau.
+    Utilisé par le flux WhatsApp (.search / .tel) et par l'onglet "Test API".
     """
     results = result["results"]
     meta = result.get("meta") or {}
     took_ms = meta.get("took_ms") or int(elapsed * 1000)
-
-    label = " ".join(p for p in (nom, prenom) if p)
-    if ville:
-        label += " (%s)" % ville
 
     lines = [f"🔍 *Recherche : {label}*"]
 
@@ -128,7 +342,8 @@ def format_results(result, nom, prenom, ville, elapsed=0.0):
         lines.append("")
         lines.append("😕 *Aucun résultat* trouvé pour cette recherche.")
         lines.append("💡 *Astuce :* essayez avec moins de critères ou une orthographe différente.")
-        lines.append(f"   Exemple : `.search {nom}`")
+        if hint:
+            lines.append(f"   Exemple : `{hint}`")
         return "\n".join(lines)
 
     lines.append("")
@@ -166,15 +381,65 @@ def _stars(confidence):
 
 
 # --------------------------------------------------------------------------- #
-#  IA automatique
+#  IA automatique (GROQ + mémoire)
 # --------------------------------------------------------------------------- #
+def _load_memory(sender, exchanges):
+    """Charge les derniers échanges mémorisés pour un utilisateur (plus ancien d'abord)."""
+    limit = max(1, min(20, int(exchanges or 5))) * 2
+    rows = (
+        AIMemory.query.filter_by(sender=sender)
+        .order_by(AIMemory.id.desc())
+        .limit(limit)
+        .all()
+    )
+    rows.reverse()
+    return [{"role": row.role, "content": row.content} for row in rows]
+
+
+def _save_memory_pair(sender, user_content, assistant_content):
+    """Enregistre un échange complet (message + réponse) en une seule transaction."""
+    sender = (sender or "")[:100]
+    db.session.add(AIMemory(
+        sender=sender, role="user",
+        content=(user_content or "")[:6000], timestamp=utc_now_iso(),
+    ))
+    db.session.add(AIMemory(
+        sender=sender, role="assistant",
+        content=(assistant_content or "")[:6000], timestamp=utc_now_iso(),
+    ))
+    db.session.commit()
+
+
+def _prune_memory(sender, exchanges):
+    """Supprime les entrées trop anciennes pour limiter la taille de la mémoire."""
+    cap = max(1, min(20, int(exchanges or 5))) * 2 + 2
+    old_rows = (
+        AIMemory.query.filter_by(sender=sender)
+        .order_by(AIMemory.id.desc())
+        .offset(cap)
+        .all()
+    )
+    for row in old_rows:
+        db.session.delete(row)
+    if old_rows:
+        db.session.commit()
+
+
 def _handle_ai(body, sender, remote_jid, is_group):
-    """Répond automatiquement avec GROQ et journalise la conversation."""
+    """Répond automatiquement avec GROQ, journalise et met à jour la mémoire."""
     start = time.perf_counter()
+    ai_cfg = AIConfig.get()
+
+    history = None
+    memory_on = bool(ai_cfg.memory_enabled)
+    if memory_on and sender:
+        history = _load_memory(sender, ai_cfg.memory_exchanges)
+
     try:
-        reply, model, tokens, duration_ms = ai_service.chat(body)
+        reply, model, tokens, duration_ms = ai_service.chat(body, history=history)
         elapsed = (time.perf_counter() - start) / 1000.0
-        _log_command("IA", body[:500], 1, "success", "", elapsed, is_ai=True)
+
+        _log_command("IA", body[:500], 1, "success", "", elapsed, is_ai=True, chat=remote_jid)
         db.session.add(AILog(
             sender=(sender or "inconnu")[:100],
             user_message=body[:6000],
@@ -185,10 +450,15 @@ def _handle_ai(body, sender, remote_jid, is_group):
             timestamp=utc_now_iso(),
         ))
         db.session.commit()
+
+        if memory_on and sender:
+            _save_memory_pair(sender, body, reply)
+            _prune_memory(sender, ai_cfg.memory_exchanges)
+
         return {"reply": reply}
     except ai_service.AIError as exc:
         elapsed = (time.perf_counter() - start) / 1000.0
-        _log_command("IA", body[:500], 0, "error", exc.message, elapsed, is_ai=True)
+        _log_command("IA", body[:500], 0, "error", exc.message, elapsed, is_ai=True, chat=remote_jid)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
 
@@ -196,7 +466,8 @@ def _handle_ai(body, sender, remote_jid, is_group):
 # --------------------------------------------------------------------------- #
 #  Journalisation
 # --------------------------------------------------------------------------- #
-def _log_command(command, query, results_count, status, error, response_time, is_ai=False):
+def _log_command(command, query, results_count, status, error, response_time,
+                 is_ai=False, chat=""):
     """Enregistre une ligne dans la table command_logs."""
     db.session.add(CommandLog(
         command=command,
@@ -206,5 +477,6 @@ def _log_command(command, query, results_count, status, error, response_time, is
         error=error[:500],
         response_time=round(response_time or 0.0, 3),
         is_ai=is_ai,
+        chat=(chat or "")[:100],
     ))
     db.session.commit()

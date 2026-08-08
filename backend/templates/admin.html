@@ -251,6 +251,28 @@
             <input type="number" id="ai-tokens" min="1" max="8192" step="1">
             <p class="hint">Longueur maximale des réponses générées.</p>
           </div>
+
+          <div class="form-row switch-row">
+            <div>
+              <label for="ai-memory">Mémoire des conversations</label>
+              <p class="hint">L'IA se souvient du contexte de chaque utilisateur</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="ai-memory"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-memory-count">Échanges mémorisés (1 - 20)</label>
+            <input type="number" id="ai-memory-count" min="1" max="20" step="1">
+            <p class="hint">Nombre de messages aller-retour gardés en mémoire par utilisateur.</p>
+          </div>
+
+          <div class="form-row" style="grid-column: 1 / -1;">
+            <label for="ai-whitelist">Conversations autorisées (une par ligne)</label>
+            <textarea id="ai-whitelist" rows="4" placeholder="0612345678"></textarea>
+            <p class="hint">Numéros ou identifiants de groupe (copiez-les depuis l'onglet Logs).<br>
+            Vide = l'IA répond à tout le monde. Astuce : envoyez <strong>.ia oui</strong> depuis un chat WhatsApp
+            pour l'ajouter automatiquement (réservé au propriétaire défini par OWNER_NUMBER).</p>
+          </div>
         </div>
 
         <div class="card-actions">
@@ -323,6 +345,7 @@
                 <th>Résultats</th>
                 <th>Temps</th>
                 <th>Erreur</th>
+                <th>Conversation</th>
               </tr>
             </thead>
             <tbody id="logs-body"></tbody>
