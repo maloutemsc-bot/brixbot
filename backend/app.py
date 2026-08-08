@@ -18,6 +18,7 @@ Démarrage :
   gunicorn app:app ...       # production
 """
 
+import datetime
 import os
 import sys
 from functools import wraps
@@ -318,7 +319,41 @@ def get_ai_logs():
 @app.route("/api/whatsapp/status", methods=["GET"])
 @require_admin
 def get_whatsapp_status():
-    return jsonify(WHATSAPP_STATE)
+    """État WhatsApp affiché dans le panneau.
+
+    Si l'état stocké est encore "unknown" (backend redémarré, ou démarré
+    après le bot), on interroge directement le bot via /health pour afficher
+    un état à jour immédiatement. La pulsation du bot synchronise ensuite
+    la mémoire du backend.
+    """
+    state = dict(WHATSAPP_STATE)
+    # La sonde est active si l'état est inconnu OU si personne ne s'est
+    # manifesté depuis plus de 30 s (ex. bot coupé sans avoir signalé
+    # "disconnected").
+    updated = state.get("updated_at")
+    stale = True
+    if updated:
+        try:
+            stale = (
+                datetime.datetime.now(datetime.timezone.utc)
+                - datetime.datetime.fromisoformat(updated)
+            ) > datetime.timedelta(seconds=30)
+        except (ValueError, TypeError):
+            stale = True
+    if state.get("status") == "unknown" or stale:
+        try:
+            response = requests.get(f"{BOT_INTERNAL_URL}/health", timeout=2)
+            if response.status_code == 200:
+                data = response.json() or {}
+                live = str(data.get("status", "unknown"))
+                if live in ("connected", "qr", "connecting", "disconnected"):
+                    state["status"] = live
+                    state["number"] = data.get("number") or state.get("number")
+                    state["updated_at"] = utc_now_iso()
+                    WHATSAPP_STATE.update(state)  # cohérence avec le dashboard
+        except requests.exceptions.RequestException:
+            pass  # bot injoignable : on garde l'état stocké
+    return jsonify(state)
 
 
 @app.route("/api/whatsapp/status", methods=["POST"])

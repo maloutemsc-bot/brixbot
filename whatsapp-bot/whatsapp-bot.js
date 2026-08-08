@@ -80,6 +80,8 @@ let currentStatus = 'disconnected'; // disconnected | connecting | qr | connecte
 let startPending = false;          // un socket est en cours de création
 let reconnectTimer = null;         // un seul timer de reconnexion à la fois
 let restartRequested = false;      // redémarrage demandé par le backend
+let lastQr = null;                 // dernier QR généré (re-envoyé si besoin)
+let lastNotifyErrorAt = 0;         // anti-spam : 1 log d'erreur backend / 30 s max
 
 /**
  * Planifie une reconnexion. L'ancien timer (s'il existe) est annulé :
@@ -100,6 +102,8 @@ function scheduleReconnect(delayMs) {
 
 /**
  * Envoie l'état de connexion WhatsApp au backend (panneau d'administration).
+ * Les erreurs ne sont journalisées qu'au maximum une fois toutes les 30 s :
+ * le backend peut démarrer plus tard que le bot (course au lancement).
  */
 async function notifyBackend(status, extra = {}) {
   try {
@@ -107,10 +111,28 @@ async function notifyBackend(status, extra = {}) {
       headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
       timeout: 8000,
     });
+    lastNotifyErrorAt = 0; // succès : on réarme la journalisation d'erreur
   } catch (err) {
-    console.error(`[backend] Impossible d'envoyer le statut "${status}" : ${err.message}`);
+    const now = Date.now();
+    if (now - lastNotifyErrorAt > 30000) {
+      lastNotifyErrorAt = now;
+      console.error(`[backend] Impossible d'envoyer le statut "${status}" : ${err.message}`);
+    }
   }
 }
+
+/**
+ * Pulsation périodique : re-envoie l'état toutes les 10 s. Ainsi, même si le
+ * backend a démarré APRÈS le bot (ou a été redémarré entre-temps), le panneau
+ * repasse automatiquement à jour : statut connecté, numéro, ou QR en cache.
+ */
+setInterval(() => {
+  if (currentStatus === 'connected' && sock) {
+    notifyBackend('connected', { number: sock.user?.id || null });
+  } else if (currentStatus === 'qr' && lastQr) {
+    notifyBackend('qr', { qr: lastQr });
+  }
+}, 10000);
 
 /* -------------------------------------------------------------------------- */
 /*  Connexion WhatsApp (Baileys)                                              */
@@ -155,13 +177,16 @@ async function startBot() {
         } catch (err) {
           console.error('Erreur d\'affichage du QR dans le terminal :', err.message);
         }
-        // Génère une image PNG et l'envoie au backend pour le panneau
+        // Génère une image PNG et l'envoie au backend pour le panneau.
+        // L'image est mise en cache : si le backend redémarre, la pulsation
+        // périodique pourra la renvoyer au panneau.
         try {
           const dataUrl = await QRCode.toDataURL(qr, {
             width: 400,
             margin: 2,
             errorCorrectionLevel: 'L',
           });
+          lastQr = dataUrl;
           await notifyBackend('qr', { qr: dataUrl });
         } catch (err) {
           console.error('Erreur de génération du QR PNG :', err.message);
@@ -170,6 +195,7 @@ async function startBot() {
 
       if (connection === 'open') {
         currentStatus = 'connected';
+        lastQr = null; // plus besoin du QR
         console.log('✅ WhatsApp connecté :', sock.user?.id || 'inconnu');
         await notifyBackend('connected', { number: sock.user?.id || null });
       } else if (connection === 'connecting') {
@@ -338,6 +364,7 @@ server.post('/internal/restart', checkBotKey, (_req, res) => {
     restartRequested = false;
     try { if (sock) sock.end(undefined); } catch (err) { /* déjà fermé */ }
     sock = null;
+    currentStatus = 'disconnected'; // état cohérent avant la reconnexion
     startPending = false;
     scheduleReconnect(500);
   }, 4000);
