@@ -1,0 +1,32 @@
+# Variables d'environnement (jamais commitées)
+.env
+backend/.env
+whatsapp-bot/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Sessions WhatsApp (identifiants sensibles)
+whatsapp-bot/auth_info/
+auth_info/
+
+# Base de données locale
+backend/instance/
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,23 @@
+# ==========================================================================
+# Dockerfile.bot — Bot WhatsApp Node.js (Baileys)
+# ==========================================================================
+
+FROM node:20-slim
+
+WORKDIR /app
+
+# Installation des dépendances (cache Docker efficace)
+COPY whatsapp-bot/package*.json ./
+RUN npm install --omit=dev
+
+# Code source
+COPY whatsapp-bot/ .
+
+# Dossier de session WhatsApp (volume persistant)
+RUN mkdir -p /app/auth_info
+
+ENV NODE_ENV=production
+
+EXPOSE 3000
+
+CMD ["node", "whatsapp-bot.js"]

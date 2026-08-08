@@ -1,0 +1,49 @@
+# ==========================================================================
+# docker-compose.yml — BrixBot
+#   - backend : API Flask + panneau d'administration (port 5000)
+#   - bot     : bot WhatsApp Baileys (port 3000)
+#
+# Copiez le fichier .env.example (racine) en .env et renseignez vos clés.
+# Commande : docker compose up --build
+# ==========================================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: brixbot-backend
+    ports:
+      - "5000:5000"
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-changez-moi-cette-cle}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      BRIX_API_KEY: ${BRIX_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      BOT_API_KEY: ${BOT_API_KEY:-changez-moi-bot}
+      BOT_INTERNAL_URL: http://bot:3000
+    volumes:
+      - backend_data:/app/instance
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: brixbot-whatsapp
+    ports:
+      - "3000:3000"
+    environment:
+      FLASK_INTERNAL_URL: http://backend:5000
+      BOT_API_KEY: ${BOT_API_KEY:-changez-moi-bot}
+      BOT_PORT: "3000"
+      AUTH_DIR: /app/auth_info
+    volumes:
+      - bot_auth:/app/auth_info
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:
+  bot_auth:

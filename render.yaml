@@ -1,0 +1,83 @@
+# ==========================================================================
+# render.yaml — Blueprint Render : déploie les deux services en 1 clic
+#
+# Utilisation :
+#   1. Poussez ce dépôt sur GitHub
+#   2. Sur render.com : bouton "New +" → "Blueprint" → choisissez le dépôt
+#   3. Renseignez les valeurs demandées (variables "sync: false") :
+#        - ADMIN_PASSWORD : mot de passe du panneau
+#        - BRIX_API_KEY   : clé API BrixHub
+#        - GROQ_API_KEY   : clé API GROQ
+#        - BOT_API_KEY    : ⚠️ entrez la MÊME valeur dans les DEUX services
+#   4. Cliquez "Apply", patientez la construction, puis scannez le QR Code
+#      dans https://brixbot-backend.onrender.com/admin → onglet WhatsApp
+#
+# ⚠️ Les disques persistants et le fonctionnement 24/7 exigent le plan
+#    Starter (payant). Le plan gratuit met le bot en veille après 15 min
+#    d'inactivité et ne permet pas de conserver la session WhatsApp.
+# ==========================================================================
+
+services:
+  # ------------------------------------------------------------------- #
+  #  Backend : API REST + panneau d'administration (port 5000)
+  # ------------------------------------------------------------------- #
+  - type: web
+    name: brixbot-backend
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.backend
+    healthCheckPath: /health
+
+    envVars:
+      # Clé secrète générée automatiquement par Render
+      - key: SECRET_KEY
+        generateValue: true
+
+      # Valeurs saisies manuellement lors de l'application du blueprint
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: BRIX_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: BOT_API_KEY
+        sync: false
+
+      # URL publique du bot (à ajuster si le nom du service change)
+      - key: BOT_INTERNAL_URL
+        value: https://brixbot-bot.onrender.com
+
+    # Base SQLite persistante
+    disk:
+      name: brixbot-backend-data
+      mountPath: /app/instance
+      sizeGB: 1
+
+  # ------------------------------------------------------------------- #
+  #  Bot WhatsApp (Baileys) — port 3000
+  # ------------------------------------------------------------------- #
+  - type: web
+    name: brixbot-bot
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.bot
+    healthCheckPath: /health
+
+    envVars:
+      # URL publique du backend (à ajuster si le nom du service change)
+      - key: FLASK_INTERNAL_URL
+        value: https://brixbot-backend.onrender.com
+
+      # ⚠️ Doit être IDENTIQUE à la valeur du service brixbot-backend
+      - key: BOT_API_KEY
+        sync: false
+
+    # Session WhatsApp persistante (auth_info)
+    disk:
+      name: brixbot-bot-data
+      mountPath: /app/auth_info
+      sizeGB: 1

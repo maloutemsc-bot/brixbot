@@ -1,0 +1,26 @@
+# ==========================================================================
+# Dockerfile.backend — Backend Flask (API + panneau d'administration)
+# ==========================================================================
+
+FROM python:3.11-slim
+
+# Variables d'environnement par défaut
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+# Installation des dépendances (cache Docker efficace)
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Code source
+COPY backend/ .
+
+# Dossier de données SQLite
+RUN mkdir -p /app/instance
+
+EXPOSE 5000
+
+# Gunicorn avec threads (SQLite + I/O réseau)
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "1", "--threads", "8", "--timeout", "120", "app:app"]

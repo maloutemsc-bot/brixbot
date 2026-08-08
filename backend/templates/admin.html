@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BrixBot — Panneau d'administration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/admin.css">
+</head>
+<body>
+
+<div class="app">
+  <!-- ============================ SIDEBAR ============================ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-logo">🤖</div>
+      <div class="brand-text">
+        <h1>BrixBot</h1>
+        <span>Admin Panel</span>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a class="nav-link active" data-tab="dashboard"><span class="nav-icon">📊</span>Tableau de bord</a>
+      <a class="nav-link" data-tab="config"><span class="nav-icon">⚙️</span>Configuration</a>
+      <a class="nav-link" data-tab="whatsapp"><span class="nav-icon">📱</span>WhatsApp</a>
+      <a class="nav-link" data-tab="ia"><span class="nav-icon">🧠</span>IA</a>
+      <a class="nav-link" data-tab="logs"><span class="nav-icon">📜</span>Logs</a>
+      <a class="nav-link" data-tab="test"><span class="nav-icon">🧪</span>Test API</a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span class="ws-pill unknown" id="wsPillSidebar">❓ Inconnu</span>
+      <button class="btn small" id="logoutBtn" style="width:100%;margin-top:12px;">🚪 Déconnexion</button>
+    </div>
+  </aside>
+
+  <!-- ============================ CONTENU ============================ -->
+  <main class="main">
+    <header class="topbar">
+      <button class="menu-btn" id="menuBtn" title="Menu">☰</button>
+      <h2 id="pageTitle">Tableau de bord</h2>
+      <div class="topbar-right">
+        <span class="ws-pill unknown" id="wsPillTop">❓ Inconnu</span>
+        <button class="btn-icon" id="refreshBtn" title="Actualiser">⟳</button>
+      </div>
+    </header>
+
+    <!-- ==================== ONGLET : TABLEAU DE BORD ==================== -->
+    <section class="tab active" id="tab-dashboard">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon">📱</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-whatsapp">—</div>
+            <div class="stat-label">WhatsApp</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🔢</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-total">0</div>
+            <div class="stat-label">Commandes totales</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">✅</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-success">0</div>
+            <div class="stat-label">Succès</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">❌</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-errors">0</div>
+            <div class="stat-label">Erreurs</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">⚡</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-avg">0 ms</div>
+            <div class="stat-label">Temps moyen</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🎯</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dash-quota">—</div>
+            <div class="stat-label">Quota BrixHub restant</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Activité récente</h3>
+            <p>Les 10 dernières commandes traitées.</p>
+          </div>
+        </div>
+        <div id="recentLogs" class="recent-logs"></div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : CONFIGURATION ==================== -->
+    <section class="tab" id="tab-config">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Configuration de la commande .search</h3>
+            <p>Les modifications prennent effet immédiatement.</p>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-row switch-row">
+            <div>
+              <label for="cfg-enabled">Activer la commande .search</label>
+              <p class="hint">Active ou désactive la commande .search sur WhatsApp</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-enabled"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row switch-row">
+            <div>
+              <label for="cfg-flexible">Recherche flexible</label>
+              <p class="hint">Réessaie automatiquement avec moins de critères si aucun résultat</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-flexible"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row switch-row">
+            <div>
+              <label for="cfg-auto">Réponse automatique</label>
+              <p class="hint">Répond un message d'aide aux messages non reconnus (si l'IA est désactivée)</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-auto"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row">
+            <label for="cfg-api">Clé API BrixHub</label>
+            <input type="password" id="cfg-api" placeholder="brix_votre_cle" autocomplete="off">
+            <p class="hint">Laissée vide, la variable d'environnement BRIX_API_KEY sera utilisée.</p>
+          </div>
+
+          <div class="form-row">
+            <label for="cfg-max">Max résultats (1 - 100)</label>
+            <input type="number" id="cfg-max" min="1" max="100" step="1">
+            <p class="hint">Nombre maximum de résultats renvoyés par recherche.</p>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn primary" id="cfg-save">💾 Sauvegarder</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : WHATSAPP ==================== -->
+    <section class="tab" id="tab-whatsapp">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Statut du bot WhatsApp</h3>
+            <p>État en temps réel de la connexion Baileys.</p>
+          </div>
+        </div>
+        <div class="ws-status">
+          <div class="ws-big unknown" id="ws-big">❓ Inconnu</div>
+          <div class="ws-details">
+            <div class="ws-detail"><span>Numéro connecté</span><strong id="ws-number">—</strong></div>
+            <div class="ws-detail"><span>Session</span><strong id="ws-session">—</strong></div>
+            <div class="ws-detail"><span>Dernière mise à jour</span><strong id="ws-updated">—</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="qr-card" style="display:none">
+        <div class="card-header">
+          <div>
+            <h3>QR Code</h3>
+            <p>Scannez ce code avec WhatsApp → Appareils connectés → Connecter un appareil.</p>
+          </div>
+        </div>
+        <div class="qr-wrap"><img id="qr-image" alt="QR Code WhatsApp"></div>
+        <p class="hint center">Le QR Code expire toutes les ~60 secondes. Il est actualisé automatiquement.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Actions</h3>
+            <p>Rafraîchir l'état ou redémarrer la connexion WhatsApp.</p>
+          </div>
+        </div>
+        <div class="card-actions">
+          <button class="btn" id="ws-refresh">⟳ Actualiser</button>
+          <button class="btn danger" id="ws-restart">🔄 Redémarrer le bot</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : IA ==================== -->
+    <section class="tab" id="tab-ia">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Configuration de l'IA (GROQ)</h3>
+            <p>Quand l'IA est activée, elle répond automatiquement à tous les messages WhatsApp (sauf .search).</p>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-row switch-row">
+            <div>
+              <label for="ai-enabled">Activer l'IA automatique</label>
+              <p class="hint">L'IA répond à tous les messages reçus sur WhatsApp</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="ai-enabled"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-key">Clé API GROQ</label>
+            <input type="password" id="ai-key" placeholder="gsk_..." autocomplete="off">
+            <p class="hint">Laissée vide, la variable d'environnement GROQ_API_KEY sera utilisée.</p>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-model">Modèle</label>
+            <select id="ai-model"></select>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-prompt">Prompt système</label>
+            <textarea id="ai-prompt" rows="4" placeholder="Tu es un assistant WhatsApp français…"></textarea>
+            <p class="hint">Instructions données à l'IA avant chaque message utilisateur.</p>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-temp">Température : <span id="ai-temp-value">0.70</span></label>
+            <input type="range" id="ai-temp" min="0" max="1" step="0.05" value="0.7">
+            <div class="range-labels"><span>0.0 · précis</span><span>1.0 · créatif</span></div>
+          </div>
+
+          <div class="form-row">
+            <label for="ai-tokens">Max tokens</label>
+            <input type="number" id="ai-tokens" min="1" max="8192" step="1">
+            <p class="hint">Longueur maximale des réponses générées.</p>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn primary" id="ai-save">💾 Sauvegarder</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Tester l'IA</h3>
+            <p>Envoie un message de test à GROQ avec la configuration actuelle.</p>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label for="ai-test-msg">Message de test</label>
+            <input type="text" id="ai-test-msg" placeholder="Bonjour, qui es-tu ?">
+          </div>
+        </div>
+        <div class="card-actions">
+          <button class="btn" id="ai-test">🧪 Tester</button>
+        </div>
+        <div id="ai-test-result" class="test-result" style="display:none"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Logs des conversations IA</h3>
+            <p>Dernières interactions entre les utilisateurs WhatsApp et GROQ.</p>
+          </div>
+          <button class="btn small" id="ai-logs-refresh">⟳</button>
+        </div>
+        <div id="ai-logs"></div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : LOGS ==================== -->
+    <section class="tab" id="tab-logs">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Historique des commandes</h3>
+            <p>Filtrez par statut ou par type (commande .search / IA).</p>
+          </div>
+          <div class="filters">
+            <select id="log-status">
+              <option value="">Tous les statuts</option>
+              <option value="success">✓ Succès</option>
+              <option value="error">✗ Erreurs</option>
+            </select>
+            <select id="log-type">
+              <option value="">Toutes les commandes</option>
+              <option value="false">.search</option>
+              <option value="true">IA</option>
+            </select>
+            <button class="btn danger small" id="logs-clear">🗑 Effacer tout</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Commande</th>
+                <th>Requête</th>
+                <th>Statut</th>
+                <th>Résultats</th>
+                <th>Temps</th>
+                <th>Erreur</th>
+              </tr>
+            </thead>
+            <tbody id="logs-body"></tbody>
+          </table>
+        </div>
+
+        <div class="pagination">
+          <button class="btn small" id="logs-prev">← Précédent</button>
+          <span id="logs-info">Page 1 / 1</span>
+          <button class="btn small" id="logs-next">Suivant →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : TEST API ==================== -->
+    <section class="tab" id="tab-test">
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Tester l'API BrixHub</h3>
+            <p>Effectue une vraie recherche directement, sans passer par WhatsApp.</p>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-row">
+            <label for="tst-nom">Nom *</label>
+            <input type="text" id="tst-nom" placeholder="Dupont">
+          </div>
+          <div class="form-row">
+            <label for="tst-prenom">Prénom</label>
+            <input type="text" id="tst-prenom" placeholder="Jean">
+          </div>
+          <div class="form-row">
+            <label for="tst-ville">Ville</label>
+            <input type="text" id="tst-ville" placeholder="Paris">
+          </div>
+          <div class="form-row">
+            <label for="tst-perpage">Résultats max</label>
+            <input type="number" id="tst-perpage" min="1" max="100" step="1" value="10">
+          </div>
+          <div class="form-row switch-row">
+            <div>
+              <label for="tst-flex">Recherche flexible</label>
+              <p class="hint">Réessaie avec moins de critères si aucun résultat</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="tst-flex" checked><span class="slider"></span></label>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn primary" id="tst-run">🧪 Tester</button>
+        </div>
+      </div>
+
+      <div class="card" id="tst-result-card" style="display:none">
+        <div class="card-header">
+          <div>
+            <h3>Résultat</h3>
+            <p>Aperçu formaté comme il serait envoyé sur WhatsApp.</p>
+          </div>
+        </div>
+        <div id="tst-formatted" class="wa-preview"></div>
+        <details class="raw">
+          <summary>Voir la réponse brute (JSON)</summary>
+          <pre id="tst-raw"></pre>
+        </details>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toasts"></div>
+
+<script>window.BRIXBOT_AUTH = {{ 'true' if auth_enabled else 'false' }};</script>
+<script src="/static/js/admin.js"></script>
+</body>
+</html>
