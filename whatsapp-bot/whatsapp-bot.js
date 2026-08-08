@@ -31,6 +31,42 @@ const {
   makeCacheableSignalKeyStore,
 } = require('@whiskeysockets/baileys');
 
+/* -------------------------------------------------------------------------- */
+/*  Filtre du bruit de décryptage (Baileys / libsignal)                       */
+/* -------------------------------------------------------------------------- */
+
+// Les erreurs "Failed to decrypt", "MessageCounterError" et "Bad MAC" sont
+// bénignes une fois qu'une seule instance tourne (messages redélivrés par
+// WhatsApp, ancien client encore connecté…). On n'affiche la première qu'une
+// seule fois pour ne pas noyer le terminal, sans cacher les vraies erreurs.
+let decryptNoiseShown = false;
+function isDecryptNoise(...args) {
+  return args.some((a) => typeof a === 'string'
+    && /decrypt message|MessageCounterError|Bad MAC|session_cipher/i.test(a));
+}
+const _origError = console.error;
+const _origWarn = console.warn;
+console.error = (...args) => {
+  if (isDecryptNoise(...args)) {
+    if (!decryptNoiseShown) {
+      decryptNoiseShown = true;
+      _origError('ℹ️ Bruit de décryptage ignoré (messages redélivrés par WhatsApp — normal).');
+    }
+    return;
+  }
+  _origError(...args);
+};
+console.warn = (...args) => {
+  if (isDecryptNoise(...args)) {
+    if (!decryptNoiseShown) {
+      decryptNoiseShown = true;
+      _origWarn('ℹ️ Bruit de décryptage ignoré (messages redélivrés par WhatsApp — normal).');
+    }
+    return;
+  }
+  _origWarn(...args);
+};
+
 const FLASK_URL = (process.env.FLASK_INTERNAL_URL || 'http://localhost:5000').replace(/\/+$/, '');
 const BOT_PORT = parseInt(process.env.BOT_PORT || '3000', 10);
 const BOT_API_KEY = process.env.BOT_API_KEY || 'changez-moi-bot';
@@ -41,8 +77,22 @@ const logger = pino({ level: LOG_LEVEL });
 
 let sock = null;
 let currentStatus = 'disconnected'; // disconnected | connecting | qr | connected
-let startPending = false;          // évite les démarrages simultanés (double socket)
-let manualRestart = false;         // redémarrage demandé par le backend
+let startPending = false;          // un socket est en cours de création
+let reconnectTimer = null;         // un seul timer de reconnexion à la fois
+let restartRequested = false;      // redémarrage demandé par le backend
+
+/**
+ * Planifie une reconnexion. L'ancien timer (s'il existe) est annulé :
+ * il ne peut donc jamais y avoir deux reconnexions simultanées.
+ */
+function scheduleReconnect(delayMs) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startPending = false;
+    startBot();
+  }, delayMs);
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Communication avec le backend Flask                                       */
@@ -71,7 +121,8 @@ async function notifyBackend(status, extra = {}) {
  * La garde startPending garantit qu'un seul socket est actif à la fois.
  */
 async function startBot() {
-  if (startPending) return;
+  if (startPending) return;  // un démarrage est déjà en cours
+  if (sock) return;          // un socket est déjà actif — JAMAIS deux
   startPending = true;
   console.log('🤖 Démarrage du bot WhatsApp…');
   try {
@@ -130,17 +181,20 @@ async function startBot() {
         const loggedOut = code === DisconnectReason.loggedOut;
         console.log(`❌ Connexion fermée (code ${code})`);
         sock = null; // plus aucun socket actif
-        await notifyBackend('disconnected', { reason: code });
+        // Non bloquant : ne jamais retarder la reconnexion par un appel au backend.
+        notifyBackend('disconnected', { reason: code });
 
-        if (manualRestart) {
+        if (restartRequested) {
           // Redémarrage demandé par le panneau : reconnexion immédiate
-          manualRestart = false;
-          setTimeout(() => { startPending = false; startBot(); }, 1000);
+          restartRequested = false;
+          console.log('🔄 Redémarrage : reconnexion dans 1 seconde…');
+          scheduleReconnect(1000);
         } else if (loggedOut) {
           console.log('🚪 Session déconnectée : un nouveau QR code sera nécessaire.');
+          console.log('   Supprimez le dossier auth_info/ puis relancez pour re-scanner.');
         } else {
           console.log('🔄 Reconnexion automatique dans 3 secondes…');
-          setTimeout(() => { startPending = false; startBot(); }, 3000);
+          scheduleReconnect(3000);
         }
       }
     });
@@ -157,8 +211,9 @@ async function startBot() {
     return sock;
   } catch (err) {
     startPending = false;
+    sock = null;
     console.error('💥 Erreur au démarrage :', err.message);
-    setTimeout(() => { startBot(); }, 5000); // nouvelle tentative
+    scheduleReconnect(5000); // nouvelle tentative
   }
 }
 
@@ -195,7 +250,7 @@ async function handleMessage(msg) {
   const isGroup = remoteJid.endsWith('@g.us');
 
   // Marque le message comme lu
-  sock.readMessages([msg.key]).catch(() => {});
+  if (sock) sock.readMessages([msg.key]).catch(() => {});
 
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
@@ -222,6 +277,7 @@ async function handleMessage(msg) {
  * (limite de WhatsApp) tout en conservant la citation du message d'origine.
  */
 async function sendChunks(remoteJid, text, quoted) {
+  if (!sock) return; // plus de socket actif : on abandonne proprement
   const MAX_LENGTH = 3900;
   const parts = [];
   let current = '';
@@ -265,21 +321,40 @@ server.post('/internal/restart', checkBotKey, (_req, res) => {
   console.log('🔄 Redémarrage demandé par le backend…');
   res.json({ ok: true });
 
-  // On marque le redémarrage comme manuel pour que le gestionnaire
-  // de fermeture ne déclenche pas une reconnexion en double.
-  manualRestart = true;
+  // Le gestionnaire 'close' détecte restartRequested et relance proprement
+  // via scheduleReconnect (au plus une reconnexion à la fois).
+  restartRequested = true;
   try {
     if (sock) sock.end(undefined); // ferme proprement la connexion
   } catch (err) {
     console.error('Erreur lors de la fermeture du socket :', err.message);
   }
 
-  // Filet de sécurité : reconnexion même si aucun événement 'close' n'arrive
+  // Filet de sécurité : si aucun 'close' n'arrive dans 4 s (socket bloqué),
+  // on force la fermeture puis on relance. Si 'close' est déjà arrivé,
+  // restartRequested est false → aucune double reconnexion possible.
   setTimeout(() => {
-    startPending = false;
+    if (!restartRequested) return;
+    restartRequested = false;
+    try { if (sock) sock.end(undefined); } catch (err) { /* déjà fermé */ }
     sock = null;
-    startBot();
-  }, 2500);
+    startPending = false;
+    scheduleReconnect(500);
+  }, 4000);
+});
+
+// Si le port est déjà occupé, une autre instance du bot tourne déjà :
+// on s'arrête immédiatement avec un message clair (deux instances en même
+// temps = erreurs "Key used already" / "Bad MAC").
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Le port ${BOT_PORT} est déjà utilisé.`);
+    console.error('   Une autre instance du bot est-elle déjà ouverte ?');
+    console.error('   Fermez-la (arreter-bot.bat) puis relancez ce bot.');
+  } else {
+    console.error('💥 Erreur du serveur interne :', err.message);
+  }
+  process.exit(1);
 });
 
 // Démarrage du serveur interne + du bot

@@ -129,6 +129,11 @@ Double-cliquez sur **`demarrer-bot.bat`** : il vérifie/installe les dépendance
 si nécessaire, démarre le backend Flask et le bot WhatsApp dans deux fenêtres
 séparées, puis ouvre automatiquement le panneau dans votre navigateur.
 
+> 🛡️ **Anti double-instance** : si le bot tourne déjà (port 3000 occupé), le
+> lanceur **refuse de démarrer une seconde instance** et ouvre simplement le
+> panneau. Ne lancez jamais le bot deux fois en même temps : cela provoque
+> les erreurs `Key used already` / `Bad MAC` (messages illisibles).
+
 Pour tout arrêter : double-cliquez sur **`arreter-bot.bat`**.
 
 ### 3. Vérification
@@ -391,6 +396,7 @@ automatiquement avec moins de critères (sans ville, sans prénom, puis nom seul
 | L'IA répond « clé manquante »     | Renseignez la clé GROQ dans l'onglet IA (ou `GROQ_API_KEY`).             |
 | Erreur 404 modèle GROQ            | Le modèle sélectionné est déprécié → choisissez-en un actif dans l'onglet IA. |
 | Bot déconnecté en boucle          | Session corrompue → supprimez `whatsapp-bot/auth_info/` et rescandez le QR. |
+| `Key used already` / `Bad MAC` en boucle | **Deux instances du bot tournent en même temps** (même session partagée). Fermez tout avec `arreter-bot.bat`, puis relancez **une seule fois** `demarrer-bot.bat`. Le lanceur bloque désormais les doubles lancements. |
 | Bot rejeté par WhatsApp           | WhatsApp peut bannir les comptes utilisés avec des bots. Utilisez un numéro dédié. |
 | Base perdue sur Render            | Le disque persistant n'est pas monté (ou plan gratuit) → ajoutez le Persistent Disk. |
 
