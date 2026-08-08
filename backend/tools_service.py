@@ -10,7 +10,10 @@ Toutes les erreurs sont levées sous forme de ToolsError avec un message
 français directement affichable dans WhatsApp.
 """
 
+import random
 import re
+import unicodedata
+from datetime import date
 
 import requests
 
@@ -234,3 +237,211 @@ def currency(amount, source, target):
     if rate is None:
         raise ToolsError(f"Conversion {source} → {target} indisponible.")
     return round(float(rate), 2)
+
+
+# --------------------------------------------------------------------------- #
+#  Crypto en direct (CoinGecko — gratuit, sans clé)
+# --------------------------------------------------------------------------- #
+CRYPTO_MAP = {
+    "btc": ("bitcoin", "₿ Bitcoin"),
+    "eth": ("ethereum", "Ξ Ethereum"),
+    "sol": ("solana", "◎ Solana"),
+    "doge": ("dogecoin", "🐕 Dogecoin"),
+    "xrp": ("ripple", "✕ Ripple"),
+    "ada": ("cardano", "🅰 Cardano"),
+    "ltc": ("litecoin", "Ł Litecoin"),
+    "bnb": ("binancecoin", "🔶 BNB"),
+}
+
+# Symboles affichés par défaut
+DEFAULT_CRYPTO = ["btc", "eth", "sol", "doge", "xrp"]
+
+
+def _fmt_price(value):
+    """Formate un prix à la française : 98245.123 → 98 245,12."""
+    try:
+        return f"{float(value):,.2f}".replace(",", " ").replace(".", ",")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def crypto(symbols=None):
+    """
+    Renvoie les prix en direct des cryptomonnaies demandées (EUR + USD).
+
+    symbols : liste de symboles (btc, eth…) ou None pour les valeurs par défaut.
+    Lève ToolsError si un symbole est inconnu ou si l'API est injoignable.
+    """
+    if symbols is None:
+        symbols = list(DEFAULT_CRYPTO)
+    symbols = list(dict.fromkeys(symbols))  # dédoublonne en conservant l'ordre
+    if not symbols:
+        raise ToolsError("Aucune cryptomonnaie demandée.")
+
+    ids = []
+    labels = []
+    for sym in symbols:
+        entry = CRYPTO_MAP.get(str(sym).lower())
+        if not entry:
+            raise ToolsError(
+                f"Symbole « {sym} » inconnu. Disponibles : "
+                + ", ".join(sorted(CRYPTO_MAP.keys()))
+            )
+        ids.append(entry[0])
+        labels.append(entry)
+
+    try:
+        response = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": ",".join(ids), "vs_currencies": "eur,usd"},
+            timeout=TIMEOUT,
+        )
+        if response.status_code == 429:
+            raise ToolsError("CoinGecko a limité les requêtes. Réessayez dans une minute.")
+        response.raise_for_status()
+        data = response.json() or {}
+    except requests.exceptions.RequestException as exc:
+        raise ToolsError("Impossible de joindre CoinGecko (%s)." % exc.__class__.__name__)
+
+    lines = ["📈 *Crypto en direct*"]
+    for cid, label in labels:  # chaque entrée = (id CoinGecko, libellé affiché)
+        prices = data.get(cid) or {}
+        if not prices:
+            continue
+        lines.append(
+            f"{label} : {_fmt_price(prices.get('eur'))} € · {_fmt_price(prices.get('usd'))} $"
+        )
+    if len(lines) == 1:
+        raise ToolsError("Aucun prix reçu de CoinGecko.")
+    lines.append("💡 Ajoute un symbole : `.crypto btc`")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+#  Boule magique 🎱
+# --------------------------------------------------------------------------- #
+EIGHT_BALL_ANSWERS = [
+    "Oui, sans aucun doute. ✅",
+    "C'est certain. 🔮",
+    "Sans l'ombre d'un doute. 🌟",
+    "Très probable. ✨",
+    "Oui, mais sois patient. ⏳",
+    "La réponse est oui. 💫",
+    "Peut-être… réessaie plus tard. 🤔",
+    "Réponse floue, repose la question. 🌫️",
+    "Mieux vaut ne pas te le dire. 🤐",
+    "Ne compte pas là-dessus. ❌",
+    "Non, vraiment pas. 🙅",
+    "Très peu probable. 🌧️",
+    "Les sources disent non. 📡",
+    "D'après mes calculs… oui ! 🧮",
+]
+
+
+def magic8ball(question):
+    """Réponse aléatoire de la boule magique, avec la question si fournie."""
+    answer = random.choice(EIGHT_BALL_ANSWERS)
+    lines = ["🎱 *La boule magique*"]
+    if question:
+        lines.append(f"❓ {question}")
+    lines.append(f"→ {answer}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+#  Blagues 😂
+# --------------------------------------------------------------------------- #
+JOKES = [
+    "Pourquoi les plongeurs plongent-ils toujours en arrière ? Parce que sinon ils tombent dans le bateau ! 🤿",
+    "Quel est le comble pour un électricien ? Ne pas être au courant. ⚡",
+    "Pourquoi les squelettes ne se battent-ils jamais ? Ils n'en ont pas le courage. 💀",
+    "Que dit un informaticien qui tombe dans la piscine ? « Aïe, ça déborde ! » 💻",
+    "Pourquoi les mathématiciens n'aiment-ils pas la plage ? Parce qu'ils ont peur des sinus. 🏖️",
+    "Qu'est-ce qui est petit, vert et qui monte et descend ? Un petit pois dans un ascenseur. 🟢",
+    "Pourquoi les poissons n'aiment-ils pas le Wi-Fi ? Ils ont peur des requins. 🦈",
+    "Quel est le sport préféré des oiseaux ? Le bad-minton ! 🦜",
+    "Pourquoi le livre de maths est-il triste ? Parce qu'il a trop de problèmes. 📚",
+    "Qu'est-ce qu'une grenouille avec une pièce sur la tête ? Une grenouille qui a un sou. 🐸",
+    "Pourquoi les fantômes sont-ils de mauvais menteurs ? Parce qu'on les voit à travers. 👻",
+    "Que fait une abeille dans une bijouterie ? Elle fait son miel ! 🐝",
+]
+
+
+def joke():
+    """Une blague aléatoire (contenu local, aucune API)."""
+    return f"😂 {random.choice(JOKES)}"
+
+
+# --------------------------------------------------------------------------- #
+#  Horoscope 🔮
+# --------------------------------------------------------------------------- #
+SIGNES = {
+    "belier": "Bélier", "taureau": "Taureau", "gemeaux": "Gémeaux",
+    "cancer": "Cancer", "lion": "Lion", "vierge": "Vierge",
+    "balance": "Balance", "scorpion": "Scorpion", "sagittaire": "Sagittaire",
+    "capricorne": "Capricorne", "verseau": "Verseau", "poissons": "Poissons",
+}
+
+_HORO_AMOUR = [
+    "une belle rencontre est possible, garde l'œil ouvert",
+    "les cœurs s'ouvrent, ose le premier pas",
+    "l'honnêteté fera des merveilles aujourd'hui",
+    "un message surprise pourrait te faire sourire",
+    "ne force rien : les bonnes choses viennent à leur heure",
+]
+
+_HORO_TRAVAIL = [
+    "ta créativité impressionne, lance cette idée",
+    "un collègue a besoin de toi, sois disponible",
+    "évite de repousser ce dossier désagréable… fais-le",
+    "une opportunité arrive par e-mail, ne la snooze pas",
+    "concentre-toi sur l'essentiel, le reste attendra",
+]
+
+_HORO_ARGENT = [
+    "une petite rentrée inattendue est possible",
+    "résiste aux achats impulsifs, ton compte te remerciera",
+    "bon moment pour ranger, pas pour dépenser",
+    "un placement prudent paiera plus tard",
+    "le café du matin… autorisé. Le reste, on verra",
+]
+
+_HORO_CHANCE = [
+    "7/10 — une bonne journée, sans plus",
+    "9/10 — la chance est de ton côté, tente quelque chose",
+    "5/10 — neutre : c'est toi qui crées la chance",
+    "8/10 — un fou rire est programmé",
+    "6/10 — évite de jouer au loto aujourd'hui",
+]
+
+
+def _normalize(text):
+    """Supprime les accents et passe en minuscules (bélier → belier)."""
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text or "")
+        if unicodedata.category(char) != "Mn"
+    ).lower().strip()
+
+
+def horoscope(signe):
+    """
+    Horoscope humoristique du jour pour un signe du zodiaque.
+
+    Lève ToolsError si le signe est inconnu.
+    """
+    key = _normalize(signe)
+    if key not in SIGNES:
+        raise ToolsError(
+            "Signe inconnu. Choisis parmi : " + ", ".join(sorted(SIGNES.values()))
+        )
+
+    label = SIGNES[key]
+    today = date.today().strftime("%d/%m/%Y")
+    return (
+        f"⭐ *Horoscope {label}* — {today}\n"
+        f"💖 Amour : {random.choice(_HORO_AMOUR)}\n"
+        f"💼 Travail : {random.choice(_HORO_TRAVAIL)}\n"
+        f"💰 Argent : {random.choice(_HORO_ARGENT)}\n"
+        f"🍀 Ta chance : {random.choice(_HORO_CHANCE)}\n"
+        "_(Lecture humoristique — ne fais surtout pas de folies !)_"
+    )

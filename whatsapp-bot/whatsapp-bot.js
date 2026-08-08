@@ -482,6 +482,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande secrète : simulation (à découvrir !) ---
+  if (/^\.hack\b/i.test(trimmed)) {
+    debugLog(`[secrete] commande : ${trimmed}`);
+    handleSecretCommand(remoteJid, msg).catch((err) => {
+      debugLog(`[secrete] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande .transcript : transcrire la note vocale citée ---
   if (/^\.(transcript|transcrire|transcription)\b/i.test(trimmed)) {
     debugLog(`[transcript] commande : ${trimmed}`);
@@ -753,6 +762,50 @@ async function handleVoiceNote(msg, key, remoteJid, sender) {
   } catch (err) {
     debugLog(`[vocal] erreur traitement : ${err.message}`);
   }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Commande secrète — simulation de brèche en plusieurs étapes (100 % fictif).
+ * La progression est envoyée message par message avec de petites pauses.
+ */
+async function handleSecretCommand(remoteJid, quoted) {
+  const ip = `192.168.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+  const targets = [
+    'banque-centrale.gov', 'serveur-nasa.internal',
+    'base-secrete.mil', 'data-centre-suisse.ch',
+  ];
+  const target = targets[Math.floor(Math.random() * targets.length)];
+
+  const steps = [
+    '🖥️ INITIALISATION DU PROTOCOLE…',
+    `🎯 Cible : ${target} (${ip})`,
+    '[■□□□□□□□□□] Connexion au serveur distant…',
+    '[■■■□□□□□□□] Contournement du pare-feu…',
+    '[■■■■■□□□□□] Décryptage SSL (AES-256)…',
+    '[■■■■■■■□□□] Injection de la charge utile…',
+    '[■■■■■■■■■□] Extraction des données…',
+    '[■■■■■■■■■■] 100 % — ACCÈS ACCORDÉ 🔓',
+  ];
+
+  for (const step of steps) {
+    if (!sock) return;
+    await sock.sendMessage(remoteJid, { text: step }, { quoted });
+    await sleep(600 + Math.floor(Math.random() * 700));
+  }
+
+  const volume = Math.floor(Math.random() * 9000) + 1000;
+  const volumeFr = volume.toLocaleString('fr-FR');
+  if (sock) {
+    await sock.sendMessage(remoteJid, {
+      text: `📦 ${volumeFr} octets exfiltrés\n`
+        + '🔑 Mot de passe : ********\n\n'
+        + "😄 Respire… c'était juste une simulation !\n"
+        + 'Utilise-la pour impressionner tes groupes 👀',
+    });
+  }
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🖥️ [simulation terminée] ${target}`);
 }
 
 /**

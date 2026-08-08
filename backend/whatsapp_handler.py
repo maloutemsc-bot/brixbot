@@ -89,6 +89,7 @@ HELP_TEXT = (
     "• `.traduis texte` — traduire en français\n"
     "• `.devise 100 EUR USD` — conversion de devises\n"
     "• `.me` — mon utilisation et mon état IA\n"
+    "🤫 Psst… il existe des commandes secrètes. Sois curieux !\n"
     "• `.stats` — statistiques du bot (propriétaire)\n"
     "• `.blacklist` / `.unblacklist` — silence de l'IA ici (propriétaire)\n"
     "• `.ia` — gestion de l'IA dans cette conversation (propriétaire)\n"
@@ -345,6 +346,16 @@ def handle_message(body, sender="", remote_jid="", is_group=False, voice=False):
     if re.match(r"^\.(?:devise|convert)(?:\s|$)", body, re.IGNORECASE):
         return _handle_devise(body, remote_jid, sender, is_group, start)
 
+    # 3c) Commandes surprises (cachées — à découvrir)
+    if re.match(r"^\.crypto(?:\s|$)", body, re.IGNORECASE):
+        return _handle_crypto(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.(?:8ball|8balle|boule)(?:\s|$)", body, re.IGNORECASE):
+        return _handle_8ball(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.blague(?:\s|$)", body, re.IGNORECASE):
+        return _handle_blague(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.(?:horoscope|astro)(?:\s|$)", body, re.IGNORECASE):
+        return _handle_horoscope(body, remote_jid, sender, is_group, start)
+
     # 4) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
         if not os.environ.get("OWNER_NUMBER", "").strip():
@@ -535,6 +546,66 @@ def _handle_devise(body, remote_jid="", sender="", is_group=False, start=None):
         return {"reply": reply}
     except tools_service.ToolsError as exc:
         _log_command(cmd, f"{amount} {source} {target}", 0, "error", exc.message,
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": f"❌ {exc.message}"}
+
+
+# --------------------------------------------------------------------------- #
+#  Commandes surprises (crypto / boule magique / blague / horoscope)
+# --------------------------------------------------------------------------- #
+def _handle_crypto(body, remote_jid="", sender="", is_group=False, start=None):
+    """Prix des cryptomonnaies en direct (CoinGecko)."""
+    start = start if start is not None else time.perf_counter()
+    arg = re.sub(r"^\.crypto\s*", "", body, flags=re.IGNORECASE).strip()
+    symbols = [s for s in arg.split() if s][:5] if arg else None
+    try:
+        reply = tools_service.crypto(symbols)
+        _log_command(".crypto", arg[:200] or "défaut", 0, "success", "",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": reply}
+    except tools_service.ToolsError as exc:
+        _log_command(".crypto", arg[:200], 0, "error", exc.message,
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": f"❌ {exc.message}"}
+
+
+def _handle_8ball(body, remote_jid="", sender="", is_group=False, start=None):
+    """Réponse aléatoire de la boule magique."""
+    start = start if start is not None else time.perf_counter()
+    question = re.sub(r"^\.(?:8ball|8balle|boule)\s*", "", body,
+                      flags=re.IGNORECASE).strip()
+    reply = tools_service.magic8ball(question)
+    _log_command(".8ball", question[:200] or "-", 0, "success", "",
+                 time.perf_counter() - start, chat=remote_jid, sender=sender)
+    return {"reply": reply}
+
+
+def _handle_blague(body, remote_jid="", sender="", is_group=False, start=None):
+    """Blague aléatoire."""
+    start = start if start is not None else time.perf_counter()
+    reply = tools_service.joke()
+    _log_command(".blague", "", 0, "success", "",
+                 time.perf_counter() - start, chat=remote_jid, sender=sender)
+    return {"reply": reply}
+
+
+def _handle_horoscope(body, remote_jid="", sender="", is_group=False, start=None):
+    """Horoscope humoristique du jour."""
+    start = start if start is not None else time.perf_counter()
+    signe = re.sub(r"^\.(?:horoscope|astro)\s*", "", body,
+                   flags=re.IGNORECASE).strip()
+    if not signe:
+        _log_command(".horoscope", "", 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": "🔮 *Commande .horoscope*\nUtilisation : `.horoscope [signe]`\n"
+                          "Exemple : `.horoscope lion`"}
+    try:
+        reply = tools_service.horoscope(signe)
+        _log_command(".horoscope", signe[:200], 0, "success", "",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": reply}
+    except tools_service.ToolsError as exc:
+        _log_command(".horoscope", signe[:200], 0, "error", exc.message,
                      time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": f"❌ {exc.message}"}
 
