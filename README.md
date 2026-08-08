@@ -123,6 +123,14 @@ Le QR code s'affiche **dans le terminal** et **dans le panneau** (onglet WhatsAp
 Scannez-le avec votre téléphone : **WhatsApp → Paramètres → Appareils connectés →
 Connecter un appareil**.
 
+### Démarrage en 1 clic (Windows) 🪟
+
+Double-cliquez sur **`demarrer-bot.bat`** : il vérifie/installe les dépendances
+si nécessaire, démarre le backend Flask et le bot WhatsApp dans deux fenêtres
+séparées, puis ouvre automatiquement le panneau dans votre navigateur.
+
+Pour tout arrêter : double-cliquez sur **`arreter-bot.bat`**.
+
 ### 3. Vérification
 
 Ouvrez http://localhost:5000/admin. Le statut WhatsApp doit passer à « ✅ Connecté »
