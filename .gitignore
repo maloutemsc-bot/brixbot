@@ -37,3 +37,4 @@ whatsapp-bot/media_cache/
 whatsapp-bot/qr_actuel.png
 whatsapp-bot/*-player-script.js
 whatsapp-bot/tessdata-cache/
+whatsapp-bot/mute-store.json

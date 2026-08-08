@@ -107,6 +107,21 @@ try { fs.mkdirSync(TESS_CACHE, { recursive: true }); } catch (_) { /* non bloqua
 // Limite de longueur du texte synthétisé (.tts — contrainte Google TTS)
 const TTS_MAX_CHARS = 200;
 
+// Membres muets par groupe (persistés dans mute-store.json) : les messages
+// d'un membre muet sont supprimés automatiquement (le bot doit être admin).
+const MUTE_STORE = path.join(__dirname, 'mute-store.json');
+let mutedMap = {}; // { [groupeJid]: { [participantJid]: true } }
+function loadMuteStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MUTE_STORE, 'utf8'));
+    mutedMap = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) { mutedMap = {}; }
+}
+function saveMuteStore() {
+  try { fs.writeFileSync(MUTE_STORE, JSON.stringify(mutedMap)); } catch (_) { /* non bloquant */ }
+}
+loadMuteStore();
+
 const logger = pino({ level: LOG_LEVEL });
 
 /* -------------------------------------------------------------------------- */
@@ -463,6 +478,18 @@ async function handleMessage(msg) {
 
   const isGroup = remoteJid.endsWith('@g.us');
 
+  // Membre muet (mode admin) : son message est supprimé immédiatement.
+  // La suppression d'un message exige que le bot soit administrateur.
+  if (isGroup && !key.fromMe && isMuted(remoteJid, key.participant)) {
+    debugLog(`[mute] suppression du message de ${contactLabel(key.participant)}`);
+    if (sock) {
+      sock.sendMessage(remoteJid, {
+        delete: { remoteJid, id: key.id, participant: key.participant },
+      }).catch((err) => debugLog(`[mute] suppression impossible : ${err.message}`));
+    }
+    return; // un membre muet ne déclenche rien d'autre
+  }
+
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
 
@@ -548,6 +575,15 @@ async function handleMessage(msg) {
     debugLog(`[transcript] commande : ${trimmed}`);
     handleTranscriptCommand(msg, remoteJid).catch((err) => {
       debugLog(`[transcript] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commandes d'administration de groupe (.kick / .mute / .link…) ---
+  if (/^\.(kick|mute|unmute|promote|demote|tagall|link|close|open)\b/i.test(trimmed)) {
+    debugLog(`[admin] commande : ${trimmed}`);
+    handleGroupAdminCommand(msg, remoteJid, sender, trimmed, isGroup).catch((err) => {
+      debugLog(`[admin] erreur : ${err.message}`);
     });
     return;
   }
@@ -1188,6 +1224,266 @@ async function handleOcrCommand(msg, remoteJid) {
     debugLog(`[ocr] erreur : ${err.message}`);
     ocrWorkerPromise = null; // un worker défaillant est recréé au prochain appel
     return replyError(remoteJid, '❌ Erreur OCR. Vérifiez que la photo est nette et réessayez.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Administration de groupe (.kick / .mute / .promote / .link…)              */
+/* -------------------------------------------------------------------------- */
+
+/** Partie locale d'un jid : "33612345678:38@s.whatsapp.net" → "33612345678". */
+function jidLocal(jid) {
+  return String(jid || '').split('@')[0].split(':')[0];
+}
+
+/** Vrai si un participant est muet dans ce groupe (normalisé sans suffixe d'appareil). */
+function isMuted(chat, participant) {
+  return !!(mutedMap[chat] && mutedMap[chat][jidLocal(participant)]);
+}
+
+/** Vrai si l'expéditeur est administrateur du groupe. */
+async function isGroupAdmin(remoteJid, senderJid) {
+  if (!sock) return false;
+  try {
+    const meta = await sock.groupMetadata(remoteJid);
+    const local = jidLocal(senderJid);
+    const member = (meta.participants || []).find((p) => jidLocal(p.id) === local);
+    return !!(member && member.admin);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Vrai si le BOT lui-même est administrateur du groupe. */
+async function isBotAdmin(remoteJid) {
+  if (!sock) return false;
+  try {
+    const meta = await sock.groupMetadata(remoteJid);
+    const local = jidLocal(sock.user?.id);
+    const member = (meta.participants || []).find((p) => jidLocal(p.id) === local);
+    return !!(member && member.admin);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Résout le membre visé par une commande admin :
+ *   1. la mention (@quelqu'un)   2. le message cité   3. le numéro en argument.
+ * Renvoie le jid complet du participant, ou null.
+ */
+async function resolveTarget(msg, remoteJid, arg) {
+  const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+  if (ctx.mentionedJid && ctx.mentionedJid.length) return ctx.mentionedJid[0];
+  if (ctx.participant) return ctx.participant;
+  const digits = String(arg || '').replace(/\D/g, '');
+  if (digits.length >= 8 && sock) {
+    const key = (digits.length === 10 && digits.startsWith('0')) ? `33${digits.slice(1)}` : digits;
+    try {
+      const meta = await sock.groupMetadata(remoteJid);
+      const match = (meta.participants || []).find(
+        (p) => jidLocal(p.id) === key || jidLocal(p.id).endsWith(key)
+      );
+      if (match) return match.id;
+    } catch (_) { /* groupe inaccessible */ }
+  }
+  return null;
+}
+
+/**
+ * Point d'entrée des commandes d'administration : réservées aux admins du groupe.
+ */
+async function handleGroupAdminCommand(msg, remoteJid, sender, body, isGroup) {
+  const cmd = body.split(/\s+/)[0].toLowerCase();
+  if (!isGroup) {
+    return replyError(remoteJid, '⚠️ Cette commande ne fonctionne que dans un groupe.', msg);
+  }
+  if (!(await isGroupAdmin(remoteJid, sender))) {
+    return replyError(remoteJid, '🔒 Cette commande est réservée aux administrateurs du groupe.', msg);
+  }
+  switch (cmd) {
+    case '.kick': return handleKick(msg, remoteJid, body);
+    case '.mute': return handleMuteToggle(msg, remoteJid, body, true);
+    case '.unmute': return handleMuteToggle(msg, remoteJid, body, false);
+    case '.promote': return handlePromoteDemote(msg, remoteJid, body, 'promote');
+    case '.demote': return handlePromoteDemote(msg, remoteJid, body, 'demote');
+    case '.tagall': return handleTagAll(msg, remoteJid);
+    case '.link': return handleGroupLink(msg, remoteJid);
+    case '.close': return handleGroupSetting(msg, remoteJid, 'announcement');
+    case '.open': return handleGroupSetting(msg, remoteJid, 'not_announcement');
+    default: return replyError(remoteJid, 'ℹ️ Commande admin inconnue.', msg);
+  }
+}
+
+/** .kick — expulse un membre du groupe. */
+async function handleKick(msg, remoteJid, body) {
+  const arg = body.replace(/^\.kick\s*/i, '').trim();
+  const target = await resolveTarget(msg, remoteJid, arg);
+  if (!target) {
+    return replyError(remoteJid,
+      '👢 *Commande .kick*\n'
+      + 'Utilisation : `.kick @membre`\n'
+      + '— ou —\n'
+      + 'Répondez au message du membre avec `.kick`\n'
+      + '— ou —\n'
+      + '`.kick 0612345678`', msg);
+  }
+  if (jidLocal(target) === jidLocal(sock?.user?.id)) {
+    return replyError(remoteJid, '😅 Je ne peux pas m\'expulser moi-même !', msg);
+  }
+  try {
+    await sock.groupParticipantsUpdate(remoteJid, [target], 'remove');
+    const who = contactLabel(target);
+    await sock.sendMessage(remoteJid, { text: `👢 *${who}* a été expulsé du groupe.` }, { quoted: msg });
+    debugLog(`[admin] kick : ${who}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👢 [expulsion] ${who}`);
+  } catch (err) {
+    debugLog(`[admin] kick impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible d\'expulser. Vérifiez que le bot est administrateur.', msg);
+  }
+}
+
+/** .mute / .unmute — silence un membre (ses messages sont supprimés). */
+async function handleMuteToggle(msg, remoteJid, body, on) {
+  const cmdName = on ? 'mute' : 'unmute';
+  const arg = body.replace(new RegExp(`^\\.${cmdName}\\s*`, 'i'), '').trim();
+  const target = await resolveTarget(msg, remoteJid, arg);
+  const list = (mutedMap[remoteJid] = mutedMap[remoteJid] || {});
+
+  // Sans cible : aide + liste des membres muets
+  if (!target) {
+    const keys = Object.keys(list);
+    const lines = [
+      on
+        ? '🔇 *Commande .mute*\nUtilisation : `.mute @membre` (ou réponse à un message)\nSes messages seront supprimés automatiquement.'
+        : '🔊 *Commande .unmute*\nUtilisation : `.unmute @membre` (ou réponse à un message)',
+      '',
+      keys.length
+        ? '🔇 Membres muets ici :\n' + keys.map((k) => `• ${contactLabel(k)}`).join('\n')
+        : 'Aucun membre muet dans ce groupe.',
+    ];
+    return sendChunks(remoteJid, lines.join('\n'), msg);
+  }
+
+  if (jidLocal(target) === jidLocal(sock?.user?.id)) {
+    return replyError(remoteJid, '😅 Je ne peux pas me muter moi-même !', msg);
+  }
+
+  const who = contactLabel(target);
+  const keyLocal = jidLocal(target); // clé normalisée (sans suffixe d'appareil)
+  if (on) {
+    // La suppression des messages exige que le BOT soit administrateur :
+    // inutile de confirmer un mute qui ne pourra pas être appliqué.
+    if (!(await isBotAdmin(remoteJid))) {
+      return replyError(remoteJid,
+        '⚠️ Le bot doit être *administrateur* du groupe pour supprimer les messages.\n'
+        + `Promotez-le (\`.promote ${who}\` ou via WhatsApp) puis réessayez.`, msg);
+    }
+    list[keyLocal] = true;
+    saveMuteStore();
+    try {
+      await sock.sendMessage(remoteJid,
+        { text: `🔇 *${who}* est muet : ses messages seront supprimés.` }, { quoted: msg });
+    } catch (err) { debugLog(`[admin] confirmation mute impossible : ${err.message}`); }
+    debugLog(`[admin] mute : ${who}`);
+  } else {
+    delete list[keyLocal];
+    saveMuteStore();
+    try {
+      await sock.sendMessage(remoteJid,
+        { text: `🔊 *${who}* peut reparler librement.` }, { quoted: msg });
+    } catch (err) { debugLog(`[admin] confirmation unmute impossible : ${err.message}`); }
+    debugLog(`[admin] unmute : ${who}`);
+  }
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${on ? '🔇 [mute]' : '🔊 [unmute]'} ${who}`);
+}
+
+/** .promote / .demote — donne ou retire les droits administrateur. */
+async function handlePromoteDemote(msg, remoteJid, body, action) {
+  const arg = body.replace(new RegExp(`^\\.${action}\\s*`, 'i'), '').trim();
+  const target = await resolveTarget(msg, remoteJid, arg);
+  if (!target) {
+    return replyError(remoteJid,
+      `${action === 'promote' ? '👑' : '⬇️'} *Commande .${action}*\n`
+      + `Utilisation : \`.${action} @membre\` (ou réponse à un message)`, msg);
+  }
+  try {
+    await sock.groupParticipantsUpdate(remoteJid, [target], action);
+    const who = contactLabel(target);
+    const text = action === 'promote'
+      ? `👑 *${who}* est maintenant administrateur.`
+      : `⬇️ *${who}* n'est plus administrateur.`;
+    await sock.sendMessage(remoteJid, { text }, { quoted: msg });
+    debugLog(`[admin] ${action} : ${who}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${action === 'promote' ? '👑 [promote]' : '⬇️ [demote]'} ${who}`);
+  } catch (err) {
+    debugLog(`[admin] ${action} impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible. Vérifiez que le bot est administrateur.', msg);
+  }
+}
+
+/** .tagall — mentionne tous les membres du groupe. */
+async function handleTagAll(msg, remoteJid) {
+  let meta;
+  try {
+    meta = await sock.groupMetadata(remoteJid);
+  } catch (err) {
+    debugLog(`[admin] tagall impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de lire le groupe.', msg);
+  }
+  const botLocal = jidLocal(sock?.user?.id);
+  const members = (meta.participants || [])
+    .map((p) => p.id)
+    .filter((id) => jidLocal(id) !== botLocal);
+  if (!members.length) {
+    return replyError(remoteJid, '👥 Aucun membre à mentionner.', msg);
+  }
+  try {
+    await sock.sendMessage(remoteJid, {
+      text: `👥 *Tous les membres* (${members.length})\n`
+        + members.map((id) => `• @${jidLocal(id)}`).join('\n'),
+      mentions: members,
+    }, { quoted: msg });
+  } catch (err) {
+    debugLog(`[admin] tagall envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible d\'envoyer la mention à tous.', msg);
+  }
+  debugLog(`[admin] tagall : ${members.length} membres`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👥 [tagall ${members.length}]`);
+}
+
+/** .link — génère un lien d'invitation pour le groupe. */
+async function handleGroupLink(msg, remoteJid) {
+  try {
+    const code = await sock.groupInviteCode(remoteJid);
+    if (!code) throw new Error('aucun code');
+    const url = `https://chat.whatsapp.com/${code}`;
+    await sock.sendMessage(remoteJid, {
+      text: `🔗 *Lien d'invitation au groupe*\n\n${url}\n\n_Si le lien expire, un admin peut le recréer._`,
+    }, { quoted: msg });
+    debugLog(`[admin] lien généré`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔗 [lien d'invitation]`);
+  } catch (err) {
+    debugLog(`[admin] lien impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de générer le lien. Vérifiez que le bot est administrateur.', msg);
+  }
+}
+
+/** .close / .open — verrouille ou ouvre le groupe (seuls les admins écrivent). */
+async function handleGroupSetting(msg, remoteJid, setting) {
+  const isAnnounce = setting === 'announcement';
+  try {
+    await sock.groupSettingUpdate(remoteJid, setting);
+    await sock.sendMessage(remoteJid, {
+      text: isAnnounce
+        ? '🔒 Groupe verrouillé : seuls les administrateurs peuvent écrire.'
+        : '🔓 Groupe ouvert : tout le monde peut écrire.',
+    }, { quoted: msg });
+    debugLog(`[admin] groupe ${isAnnounce ? 'verrouillé' : 'ouvert'}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${isAnnounce ? '🔒 [groupe verrouillé]' : '🔓 [groupe ouvert]'}`);
+  } catch (err) {
+    debugLog(`[admin] réglage impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible. Vérifiez que le bot est administrateur.', msg);
   }
 }
 
