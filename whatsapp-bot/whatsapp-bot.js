@@ -473,8 +473,8 @@ async function handleMessage(msg) {
   // Messages sans texte (photos, vidéos, documents…) : rien à traiter
   if (!trimmed) return;
 
-  // --- Commandes médias gérées directement par le bot (.sticker / .yt) ---
-  if (/^\.(sticker|yt|audio)\b/i.test(trimmed)) {
+  // --- Commandes médias gérées directement par le bot (.sticker / .yt / .extract) ---
+  if (/^\.(sticker|yt|audio|extract)\b/i.test(trimmed)) {
     debugLog(`[media] commande locale : ${trimmed}`);
     handleMediaCommand(msg, key, trimmed).catch((err) => {
       debugLog(`[media] erreur : ${err.message}`);
@@ -553,6 +553,9 @@ async function handleMediaCommand(msg, key, body) {
   if (/^\.sticker\b/i.test(body)) {
     return handleStickerCommand(msg, remoteJid);
   }
+  if (/^\.extract\b/i.test(body)) {
+    return handleExtractCommand(msg, remoteJid);
+  }
   return handleYtCommand(msg, remoteJid, body);
 }
 
@@ -604,6 +607,91 @@ async function handleStickerCommand(msg, remoteJid) {
   } catch (err) {
     debugLog(`[sticker] conversion impossible : ${err.message}`);
     return replyError(remoteJid, '❌ Impossible de convertir cette image en sticker.', msg);
+  }
+}
+
+/**
+ * .extract — renvoie le média CITÉ (image, note vocale, vidéo, document…).
+ *
+ * Répondez à une image ou à une note vocale avec `.extract` : le bot
+ * télécharge le média et le renvoie dans la conversation. Une photo envoyée
+ * avec la légende `.extract` est également acceptée. La note vocale est
+ * renvoyée telle quelle (ptt conservé).
+ */
+async function handleExtractCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const quoted = current.extendedTextMessage?.contextInfo?.quotedMessage || null;
+
+  // Média source : message courant (photo avec légende .extract) ou message cité
+  const source = current.imageMessage
+    ? msg
+    : (quoted ? { ...msg, message: quoted } : null);
+
+  if (!source) {
+    return replyError(remoteJid,
+      '📥 *Commande .extract*\n'
+      + 'RÉPONDEZ à une image, une note vocale ou une vidéo avec `.extract`\n'
+      + '— ou —\n'
+      + 'Envoyez une photo avec la légende `.extract`.', msg);
+  }
+
+  const sm = source.message || {};
+  const image = sm.imageMessage;
+  const audio = sm.audioMessage;
+  const video = sm.videoMessage;
+  const doc = sm.documentMessage;
+  const sticker = sm.stickerMessage;
+
+  if (!image && !audio && !video && !doc && !sticker) {
+    return replyError(remoteJid,
+      '❌ `.extract` fonctionne avec une image, une note vocale, une vidéo, '
+      + 'un document ou un sticker.\nRépondez à un média avec `.extract`.', msg);
+  }
+
+  // Message de statut pendant le téléchargement (utile pour les gros médias)
+  if (sock && (audio || video || doc)) {
+    sock.sendMessage(remoteJid, { text: '📥 Extraction du média…' }).catch(() => {});
+  }
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[extract] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger le média. Réessayez.', msg);
+  }
+
+  try {
+    if (image) {
+      await sock.sendMessage(remoteJid, { image: buffer, caption: '📥 *Média extrait*' },
+        { quoted: msg });
+    } else if (audio) {
+      // Note vocale (ptt) ou audio normal : on conserve le format d'origine
+      await sock.sendMessage(remoteJid, {
+        audio: buffer,
+        mimetype: audio.mimetype || 'audio/ogg; codecs=opus',
+        ptt: audio.ptt !== false,
+      }, { quoted: msg });
+    } else if (video) {
+      await sock.sendMessage(remoteJid, {
+        video: buffer,
+        caption: '📥 *Média extrait*',
+        mimetype: video.mimetype,
+      }, { quoted: msg });
+    } else if (doc) {
+      await sock.sendMessage(remoteJid, {
+        document: buffer,
+        mimetype: doc.mimetype,
+        fileName: doc.fileName || 'fichier',
+      }, { quoted: msg });
+    } else if (sticker) {
+      await sock.sendMessage(remoteJid, { sticker: buffer }, { quoted: msg });
+    }
+    debugLog(`[extract] média renvoyé (${buffer.length} octets)`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📥 [média extrait]`);
+  } catch (err) {
+    debugLog(`[extract] envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Envoi du média impossible.', msg);
   }
 }
 

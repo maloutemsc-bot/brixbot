@@ -96,6 +96,7 @@ HELP_TEXT = (
     "🖼 Envoyez une photo avec la légende `.sticker` pour la transformer en sticker.\n"
     "🎵 `.yt lien` — télécharge l'audio d'une vidéo YouTube.\n"
     "🎤 `.transcript` (réponse à un vocal) — transcrit la note vocale.\n"
+    "📥 `.extract` (réponse à une image/vocal) — renvoie le média dans le chat.\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
