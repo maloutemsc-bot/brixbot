@@ -233,6 +233,7 @@
       $('#ai-memory').checked = !!config.memory_enabled;
       $('#ai-memory-count').value = config.memory_exchanges || 5;
       $('#ai-whitelist').value = config.ai_whitelist || '';
+      $('#ai-blacklist').value = config.ai_blacklist || '';
 
       await loadAILogs();
     } catch (err) { toast(err.message, 'error'); }
@@ -252,6 +253,7 @@
           memory_enabled: $('#ai-memory').checked,
           memory_exchanges: parseInt($('#ai-memory-count').value, 10) || 5,
           ai_whitelist: $('#ai-whitelist').value,
+          ai_blacklist: $('#ai-blacklist').value,
         }),
       });
       toast('Configuration IA enregistrée ✅');

@@ -279,6 +279,11 @@ def save_ai_config():
         cfg.ai_whitelist = "\n".join(
             line.strip() for line in str(data["ai_whitelist"]).splitlines() if line.strip()
         )
+    if "ai_blacklist" in data:
+        # Nettoie : une entrée par ligne, sans lignes vides
+        cfg.ai_blacklist = "\n".join(
+            line.strip() for line in str(data["ai_blacklist"]).splitlines() if line.strip()
+        )
 
     db.session.commit()
     return jsonify({"ok": True, "config": cfg.to_dict()})
@@ -564,6 +569,7 @@ def debug_dump():
         },
         "bot_config": {**bot_cfg.to_dict(), "api_key": mask(bot_cfg.api_key)},
         "ai_config": {**ai_cfg.to_dict(), "api_key": mask(ai_cfg.api_key)},
+        "liste_noire_conversations": ai_cfg.ai_blacklist or "(vide)",
         "stats": _compute_stats(),
         "derniers_logs": [log.to_dict() for log in recent],
         "logs_ia": [log.to_dict() for log in ai_recent],

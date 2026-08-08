@@ -2,11 +2,14 @@
 whatsapp_handler.py — Traitement des messages WhatsApp entrants.
 
 Priorité des messages :
-  1. Commandes .search / .tel → recherche BrixHub (nom ou numéro)
-  2. Commande .ia (réservée au propriétaire) → gestion de la whitelist IA
-  3. IA automatique (si activée ET conversation autorisée) → GROQ
-  4. Réponse automatique par défaut
-  5. Sinon → le message est ignoré
+  1. .help / .menu → aide générale (tout le monde)
+  2. .blacklist / .unblacklist / .me / .stats → commandes propriétaire
+  3. .search / .tel → recherche BrixHub (nom ou numéro)
+  4. .ia (propriétaire) → gestion whitelist + liste noire
+  5. IA automatique (si activée ET conversation autorisée) → GROQ
+     (la liste noire est PRIORITAIRE : un chat banni est toujours muet)
+  6. Réponse automatique par défaut
+  7. Sinon → le message est ignoré
 """
 
 import os
@@ -48,6 +51,18 @@ OWNER_HINT = (
     "🔒 Les commandes `.ia` sont réservées au propriétaire du bot.\n"
     "Ajoutez votre numéro dans `backend/.env` (ex: `OWNER_NUMBER=33612345678`)\n"
     "puis relancez le backend (arreter-bot.bat puis demarrer-bot.bat)."
+)
+
+# Message d'aide général (commande .help)
+HELP_TEXT = (
+    "🤖 *BrixBot — Commandes*\n"
+    "• `.search nom [prénom] [ville]` — chercher une personne\n"
+    "• `.tel numéro` — chercher un numéro de téléphone\n"
+    "• `.me` — mon utilisation et mon état IA\n"
+    "• `.stats` — statistiques du bot (propriétaire)\n"
+    "• `.blacklist` / `.unblacklist` — silence de l'IA ici (propriétaire)\n"
+    "• `.ia` — gestion de l'IA dans cette conversation (propriétaire)\n"
+    "💬 Envoie un message normal pour discuter avec l'IA."
 )
 
 
@@ -104,6 +119,17 @@ def _whitelist_list(ai_cfg):
     ]
 
 
+def _blacklist_list(ai_cfg):
+    """Convertit le champ texte ai_blacklist en liste d'entrées nettoyées."""
+    if not ai_cfg or not ai_cfg.ai_blacklist:
+        return []
+    return [
+        line.strip()
+        for line in str(ai_cfg.ai_blacklist).splitlines()
+        if line.strip()
+    ]
+
+
 def _entry_matches(entry, sender_local, chat_local, sender_key, chat_key):
     """
     Vrai si une entrée de la liste (numéro ou identifiant) correspond
@@ -119,6 +145,31 @@ def _entry_matches(entry, sender_local, chat_local, sender_key, chat_key):
     # simple numéro (ex: 0612345678)
     entry_key = _phone_key(_digits(entry))
     return bool(entry_key) and (entry_key == sender_key or entry_key == chat_key)
+
+
+def _chat_blacklisted(ai_cfg, sender, remote_jid, is_group=False):
+    """
+    Vrai si la conversation est sur la liste noire (l'IA doit se taire ici).
+    Même logique de normalisation que la whitelist.
+    """
+    entries = _blacklist_list(ai_cfg)
+    if not entries:
+        return False
+
+    sender_local = _jid_local(sender)
+    chat_local = _jid_local(remote_jid)
+    sender_key = _phone_key(_digits(sender_local))
+    chat_key = _phone_key(_digits(chat_local))
+
+    if is_group:
+        return any(
+            _entry_matches(entry, "", chat_local, "", chat_key)
+            for entry in entries
+        )
+    return any(
+        _entry_matches(entry, sender_local, sender_local, sender_key, sender_key)
+        for entry in entries
+    )
 
 
 def _chat_allowed(whitelist_text, sender, remote_jid, is_group=False):
@@ -195,19 +246,35 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
     """
     body = (body or "").strip()
     start = time.perf_counter()
+    elapsed = 0.0
 
     if not body:
         _log_command("MSG", "", 0, "ignored", "Message vide (sans texte)", 0.0,
                      chat=remote_jid, sender=sender)
         return {"ignore": True}
 
-    # 1) Commandes de recherche BrixHub
+    # 1) Aide générale (accessible à tout le monde)
+    if re.match(r"^\.(?:help|aide|menu|start|commands|commandes)(?:\s|$)", body, re.IGNORECASE):
+        _log_command(".help", body[:500], 0, "success", "Aide affichée", 0.0,
+                     chat=remote_jid, sender=sender)
+        return {"reply": HELP_TEXT}
+
+    # 2) Commandes propriétaire (.blacklist/.stats) + .me (ouvert à tous)
+    if re.match(r"^\.(?:blacklist|unblacklist|stats)(?:\s|$)", body, re.IGNORECASE):
+        return _handle_owner_command(body, sender, remote_jid, is_group, start)
+    if re.match(r"^\.me(?:\s|$)", body, re.IGNORECASE):
+        result = _handle_me(sender, remote_jid, is_group)
+        _log_command(".me", body[:500], 0, "success", "", 0.0,
+                     chat=remote_jid, sender=sender)
+        return result
+
+    # 3) Commandes de recherche BrixHub
     if re.match(r"^\.search(?:\s|$)", body, re.IGNORECASE):
         return _handle_search(body, remote_jid, sender, is_group, start)
     if re.match(r"^\.tel(?:\s|$)", body, re.IGNORECASE):
         return _handle_tel(body, remote_jid, sender, is_group, start)
 
-    # 2) Commande de contrôle .ia (réservée au propriétaire)
+    # 4) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
         if not os.environ.get("OWNER_NUMBER", "").strip():
             _log_command(".ia", body[:500], 0, "success",
@@ -223,12 +290,19 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
                      chat=remote_jid, sender=sender)
         return result
 
-    # 3) IA automatique (si activée et conversation autorisée)
+    # 5) IA automatique (si activée et conversation autorisée)
     ai_cfg = AIConfig.get()
-    if ai_cfg.enabled and _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group):
-        return _handle_ai(body, sender, remote_jid, is_group)
+    if ai_cfg.enabled:
+        # Blacklist PRIORITAIRE : cette conversation est bannie → on se tait
+        if _chat_blacklisted(ai_cfg, sender, remote_jid, is_group):
+            _log_command("IA", body[:500], 0, "ignored",
+                         "Conversation sur liste noire (blacklist IA)", elapsed,
+                         is_ai=True, chat=remote_jid, sender=sender)
+            return {"ignore": True}
+        if _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group):
+            return _handle_ai(body, sender, remote_jid, is_group)
 
-    # 4) Réponse par défaut (message ignoré par l'IA mais réponse auto active)
+    # 6) Réponse par défaut (message ignoré par l'IA mais réponse auto active)
     bot_cfg = BotConfig.get()
     elapsed = time.perf_counter() - start
     if bot_cfg.auto_response:
@@ -237,10 +311,10 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
                      chat=remote_jid, sender=sender)
         return {"reply": DEFAULT_RESPONSE}
 
-    # 5) Ignorer — on journalise TOUT message non traité avec le motif exact.
+    # 7) Ignorer — on journalise TOUT message non traité avec le motif exact.
     if ai_cfg.enabled:
         _log_command("IA", body[:500], 0, "ignored",
-                     "Conversation non autorisée (whitelist IA)", elapsed,
+                     "Conversation non autorisée (whitelist IA)", time.perf_counter() - start,
                      is_ai=True, chat=remote_jid, sender=sender)
     else:
         _log_command("MSG", body[:500], 0, "ignored",
@@ -323,53 +397,229 @@ def _handle_tel(body, remote_jid="", sender="", is_group=False, start=None):
 
 
 # --------------------------------------------------------------------------- #
-#  Commande .ia (whitelist, réservée au propriétaire)
+#  Commandes propriétaire (.blacklist / .unblacklist / .me / .stats)
 # --------------------------------------------------------------------------- #
-def _handle_ia(body, sender, remote_jid):
-    """Active/désactive l'IA pour la conversation courante, ou affiche l'état."""
+def _handle_owner_command(body, sender, remote_jid, is_group, start=None):
+    """
+    Point d'entrée des commandes réservées au propriétaire (OWNER_NUMBER).
+    Journalise le résultat, et surtout le motif quand c'est ignoré.
+    """
+    start = start if start is not None else time.perf_counter()
+    cmd = body.split()[0].lower()
+
+    if not os.environ.get("OWNER_NUMBER", "").strip():
+        _log_command(cmd, body[:500], 0, "success",
+                     "Aide affichée (OWNER_NUMBER non configuré)", 0.0,
+                     chat=remote_jid, sender=sender)
+        return {"reply": OWNER_HINT}
+    if not _is_owner(sender):
+        _log_command(cmd, body[:500], 0, "ignored", "Non propriétaire", 0.0,
+                     chat=remote_jid, sender=sender)
+        return {"ignore": True}
+
+    elapsed = time.perf_counter() - start
+    if cmd == ".blacklist":
+        result = _handle_blacklist(body, sender, remote_jid)
+    elif cmd == ".unblacklist":
+        result = _handle_unblacklist(body, sender, remote_jid)
+    else:  # .stats
+        result = _handle_stats()
+    _log_command(cmd, body[:500], 0, "success", "", elapsed,
+                 chat=remote_jid, sender=sender)
+    return result
+
+
+def _handle_blacklist(body, sender, remote_jid):
+    """Gère la liste noire : silence l'IA dans cette conversation."""
     ai_cfg = AIConfig.get()
-    entries = _whitelist_list(ai_cfg)
+    blacklist = _blacklist_list(ai_cfg)
+    whitelist = _whitelist_list(ai_cfg)
     parts = body.split()
     action = parts[1].lower() if len(parts) > 1 else ""
     chat_key = remote_jid or sender
 
-    def save_whitelist():
-        ai_cfg.ai_whitelist = "\n".join(entries)
+    def save_lists():
+        ai_cfg.ai_blacklist = "\n".join(blacklist)
+        ai_cfg.ai_whitelist = "\n".join(whitelist)
+        db.session.commit()
+
+    if action in ("oui", "on", "add", "ajouter", "bannir", "ban", "1"):
+        if chat_key not in blacklist:
+            blacklist.append(chat_key)
+            if chat_key in whitelist:
+                whitelist.remove(chat_key)  # une conversation bannie ne peut pas rester autorisée
+            save_lists()
+            return {"reply": "🔇 IA désactivée dans cette conversation (liste noire)."}
+        return {"reply": "ℹ️ Cette conversation est déjà sur la liste noire."}
+
+    if action in ("non", "off", "remove", "retirer", "debannir", "unban", "0"):
+        if chat_key in blacklist:
+            blacklist.remove(chat_key)
+            save_lists()
+            return {"reply": "🔊 IA réactivée dans cette conversation."}
+        return {"reply": "ℹ️ Cette conversation n'était pas sur la liste noire."}
+
+    if action in ("liste", "list", "status", "etat"):
+        if not blacklist:
+            return {"reply": "📋 Liste noire vide : l'IA peut répondre partout."}
+        return {"reply": "🔇 Conversations où l'IA est muette :\n" +
+                         "\n".join(f"• {entry}" for entry in blacklist)}
+
+    if action in ("clear", "effacer", "tout"):
+        blacklist.clear()
+        save_lists()
+        return {"reply": "🗑 Liste noire vidée : l'IA peut répondre partout."}
+
+    active = chat_key in blacklist
+    return {"reply": (
+        "🔇 *Commande .blacklist*\n"
+        "• `.blacklist oui` — rendre l'IA muette ici\n"
+        "• `.blacklist non` — réactiver l'IA ici\n"
+        "• `.blacklist liste` — voir la liste noire\n"
+        "• `.blacklist clear` — vider la liste noire\n\n"
+        f"Cette conversation est-elle bannie ? {'✅ oui' if active else '❌ non'}."
+    )}
+
+
+def _handle_unblacklist(body, sender, remote_jid):
+    """Retire la conversation courante de la liste noire."""
+    ai_cfg = AIConfig.get()
+    blacklist = _blacklist_list(ai_cfg)
+    chat_key = remote_jid or sender
+    if chat_key in blacklist:
+        blacklist.remove(chat_key)
+        ai_cfg.ai_blacklist = "\n".join(blacklist)
+        db.session.commit()
+        return {"reply": "🔊 IA réactivée dans cette conversation."}
+    return {"reply": "ℹ️ Cette conversation n'était pas sur la liste noire."}
+
+
+def _handle_me(sender, remote_jid, is_group):
+    """Résumé d'utilisation de l'expéditeur : messages, IA, mémoire. (Tout le monde.)"""
+    ai_cfg = AIConfig.get()
+    blacklisted = _chat_blacklisted(ai_cfg, sender, remote_jid, is_group)
+    whitelisted = _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group)
+
+    # En groupe, les logs portent le jid du groupe dans chat ; en privé,
+    # l'expéditeur est le plus fiable. On couvre les deux cas.
+    total = CommandLog.query.filter(
+        (CommandLog.sender == sender) | (CommandLog.chat == remote_jid)
+    ).count()
+    ai_total = CommandLog.query.filter(
+        CommandLog.is_ai.is_(True),
+        (CommandLog.sender == sender) | (CommandLog.chat == remote_jid),
+    ).count()
+    errors = CommandLog.query.filter(
+        CommandLog.status == "error",
+        (CommandLog.sender == sender) | (CommandLog.chat == remote_jid),
+    ).count()
+
+    # Tokens consommés par CET expéditeur (AILog.sender = jid de l'expéditeur,
+    # jamais celui du groupe). En groupe on affiche le total du bot : les
+    # conversations de groupe n'ont pas d'expéditeur exploitable ici.
+    if is_group:
+        tokens = db.session.query(
+            db.func.coalesce(db.func.sum(AILog.tokens_used), 0)
+        ).scalar() or 0
+    else:
+        tokens = db.session.query(
+            db.func.coalesce(db.func.sum(AILog.tokens_used), 0)
+        ).filter(AILog.sender == sender).scalar() or 0
+
+    header = "👤 *Mes stats (groupe)*" if is_group else "👤 *Mes stats*"
+    return {"reply": (
+        f"{header}\n"
+        f"• 📨 Messages traités : {total}\n"
+        f"• 🤖 Réponses IA : {ai_total}\n"
+        f"• ❌ Erreurs : {errors}\n"
+        f"• 🔤 Tokens consommés : {tokens}\n\n"
+        f"• État IA ici : {'🔇 muette (liste noire)' if blacklisted else ('✅ active' if whitelisted else '❌ inactive')}\n"
+        "• 🔁 Réponses IA sur tous les messages : "
+        f"{'✅ oui' if ai_cfg.enabled else '❌ non'}"
+    )}
+
+
+def _handle_stats():
+    """Statistiques globales du bot (réservées au propriétaire)."""
+    total = CommandLog.query.count()
+    success = CommandLog.query.filter_by(status="success").count()
+    errors = CommandLog.query.filter_by(status="error").count()
+    ignored = CommandLog.query.filter_by(status="ignored").count()
+    avg = db.session.query(db.func.avg(CommandLog.response_time)).scalar() or 0.0
+    ai_count = CommandLog.query.filter_by(is_ai=True).count()
+    tokens = db.session.query(db.func.coalesce(db.func.sum(AILog.tokens_used), 0)).scalar() or 0
+    bot_cfg = BotConfig.get()
+    search_enabled = "✅" if bot_cfg.command_enabled else "❌"
+    key_status = "✅" if bot_cfg.api_key or os.environ.get("BRIX_API_KEY", "").strip() else "⚠️ manquante"
+
+    return {"reply": (
+        "📊 *Stats du bot*\n"
+        f"• 📨 Messages reçus : {total}\n"
+        f"• ✅ Succès : {success} · ❌ Erreurs : {errors}\n"
+        f"• 🚫 Ignorés : {ignored} · 🤖 Réponses IA : {ai_count}\n"
+        f"• ⚡ Temps moyen : {int(avg * 1000)} ms\n"
+        f"• 🔤 Tokens consommés : {tokens}\n\n"
+        f"• 🔍 .search : {search_enabled} · Clé BrixHub : {key_status}"
+    )}
+
+
+# --------------------------------------------------------------------------- #
+#  Commande .ia (whitelist, réservée au propriétaire)
+# --------------------------------------------------------------------------- #
+def _handle_ia(body, sender, remote_jid):
+    """
+    Active/désactive l'IA pour la conversation courante, ou affiche l'état.
+
+    - `.ia oui`  → autorise (whitelist) et retire de la liste noire
+    - `.ia non`  → bannit (liste noire) et retire de la whitelist
+    La liste noire est prioritaire : un chat banni est toujours muet.
+    """
+    ai_cfg = AIConfig.get()
+    whitelist = _whitelist_list(ai_cfg)
+    blacklist = _blacklist_list(ai_cfg)
+    parts = body.split()
+    action = parts[1].lower() if len(parts) > 1 else ""
+    chat_key = remote_jid or sender
+
+    def save_lists():
+        ai_cfg.ai_whitelist = "\n".join(whitelist)
+        ai_cfg.ai_blacklist = "\n".join(blacklist)
         db.session.commit()
 
     if action in ("oui", "on", "add", "ajouter", "activer", "1"):
-        if chat_key not in entries:
-            entries.append(chat_key)
-            save_whitelist()
-            return {"reply": "✅ IA activée pour cette conversation."}
-        return {"reply": "ℹ️ L'IA est déjà active pour cette conversation."}
+        if chat_key in blacklist:
+            blacklist.remove(chat_key)  # réactivation : on retire le bannissement
+        if chat_key not in whitelist:
+            whitelist.append(chat_key)
+            save_lists()
+        return {"reply": "✅ IA activée pour cette conversation."}
 
     if action in ("non", "off", "remove", "retirer", "desactiver", "0"):
-        if chat_key in entries:
-            entries.remove(chat_key)
-            save_whitelist()
-            return {"reply": "❌ IA désactivée pour cette conversation."}
-        if not entries:
-            return {"reply": "ℹ️ L'IA répond actuellement à tout le monde. "
-                             "Ajoutez d'abord une liste dans le panneau, onglet IA, "
-                             "pour pouvoir l'exclure ici."}
-        return {"reply": "ℹ️ L'IA n'était pas active pour cette conversation."}
+        if chat_key not in blacklist:
+            blacklist.append(chat_key)  # le bannissement est prioritaire
+            if chat_key in whitelist:
+                whitelist.remove(chat_key)
+            save_lists()
+        return {"reply": "🔇 IA désactivée pour cette conversation (liste noire)."}
 
     if action in ("liste", "list", "status", "etat"):
-        if not entries:
-            return {"reply": "📋 Whitelist IA vide : l'IA répond à tout le monde."}
-        return {"reply": "📋 Conversations où l'IA est active :\n" +
-                         "\n".join(f"• {entry}" for entry in entries)}
+        lines = ["📋 Conversations autorisées (whitelist) :"]
+        lines.append("\n".join(f"• {entry}" for entry in whitelist) if whitelist
+                     else "• (vide : l'IA répond à tout le monde)")
+        lines.append("")
+        lines.append("🔇 Conversations bannies (liste noire) :")
+        lines.append("\n".join(f"• {entry}" for entry in blacklist) if blacklist else "• (vide)")
+        return {"reply": "\n".join(lines)}
 
-    active = chat_key in entries or not entries
     return {"reply": (
         "🤖 *Commandes IA*\n"
         "• `.ia` — état de cette conversation\n"
         "• `.ia oui` — activer l'IA ici\n"
-        "• `.ia non` — désactiver l'IA ici\n"
-        "• `.ia liste` — voir la liste complète\n\n"
+        "• `.ia non` — bannir l'IA ici (liste noire)\n"
+        "• `.ia liste` — voir whitelist et liste noire\n\n"
         f"État actuel pour cette conversation : "
-        f"{'✅ active' if active else '❌ inactive'}."
+        f"{'🔇 muette (liste noire)' if chat_key in blacklist
+          else ('✅ active' if (chat_key in whitelist or not whitelist) else '❌ inactive')}."
     )}
 
 

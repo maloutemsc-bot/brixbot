@@ -274,6 +274,14 @@
             Vide = l'IA répond à tout le monde. Astuce : envoyez <strong>.ia oui</strong> depuis un chat WhatsApp
             pour l'ajouter automatiquement (réservé au propriétaire défini par OWNER_NUMBER).</p>
           </div>
+
+          <div class="form-row" style="grid-column: 1 / -1;">
+            <label for="ai-blacklist">🔇 Conversations bannies — l'IA se tait ici (une par ligne)</label>
+            <textarea id="ai-blacklist" rows="4" placeholder="123456789@g.us"></textarea>
+            <p class="hint">Numéros ou identifiants de groupe où l'IA ne doit JAMAIS répondre (prioritaire sur tout).<br>
+            Astuce : envoyez <strong>.blacklist oui</strong> depuis un groupe WhatsApp pour le bannir directement
+            (réservé au propriétaire défini par OWNER_NUMBER).</p>
+          </div>
         </div>
 
         <div class="card-actions">

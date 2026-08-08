@@ -86,6 +86,9 @@ class AIConfig(db.Model):
     # Whitelist des conversations autorisées (une entrée par ligne).
     # Vide = l'IA répond à tout le monde.
     ai_whitelist = db.Column(db.Text, default="", nullable=False)
+    # Blacklist des conversations bannies (une entrée par ligne).
+    # Prioritaire : une conversation listée ici ne reçoit JAMAIS de réponse IA.
+    ai_blacklist = db.Column(db.Text, default="", nullable=False)
 
     def to_dict(self):
         return {
@@ -99,6 +102,7 @@ class AIConfig(db.Model):
             "memory_enabled": bool(self.memory_enabled),
             "memory_exchanges": self.memory_exchanges,
             "ai_whitelist": self.ai_whitelist or "",
+            "ai_blacklist": self.ai_blacklist or "",
         }
 
     @staticmethod
@@ -219,9 +223,10 @@ def _ensure_columns(app):
     # Nouveautés de la version avec mémoire + whitelist
     for table, columns in {
         "ai_config": [
-            ("memory_enabled", "BOOLEAN DEFAULT 1"),
+            (            "memory_enabled", "BOOLEAN DEFAULT 1"),
             ("memory_exchanges", "INTEGER DEFAULT 5"),
             ("ai_whitelist", "TEXT DEFAULT ''"),
+            ("ai_blacklist", "TEXT DEFAULT ''"),
         ],
         "command_logs": [
             ("chat", "VARCHAR(100) DEFAULT ''"),
