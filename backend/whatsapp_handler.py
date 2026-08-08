@@ -94,7 +94,8 @@ HELP_TEXT = (
     "• `.ia` — gestion de l'IA dans cette conversation (propriétaire)\n"
     "🖼 Envoyez une photo avec la légende `.sticker` pour la transformer en sticker.\n"
     "🎵 `.yt lien` — télécharge l'audio d'une vidéo YouTube.\n"
-    "🎤 Les notes vocales sont transcrites et reçoivent une réponse IA.\n"
+    "🎤 `.transcript` (réponse à un vocal) — transcrit la note vocale.\n"
+    "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
 

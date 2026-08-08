@@ -430,25 +430,48 @@ async function handleMessage(msg) {
     + `corps="${(body || '').slice(0, 100).replace(/\n/g, ' ')}"`);
 
   const remoteJid = key.remoteJid;
-  const sender = key.participant || remoteJid;
+  // Expéditeur réel : pour un message envoyé depuis le compte lié (fromMe),
+  // c'est le numéro du bot lui-même (l'utilisateur) — sinon le participant.
+  // Ceci permet aux commandes propriétaire (.blacklist, .stats…) d'être
+  // reconnues quand l'utilisateur envoie depuis son propre WhatsApp.
+  const sender = key.fromMe
+    ? (sock?.user?.id || key.participant || remoteJid)
+    : (key.participant || remoteJid);
 
   // Journal de conversations : enregistre TOUT message échangé (reçu ou
   // envoyé), même ceux que le backend décidera d'ignorer. L'écriture est
   // lancée sans attendre (fire-and-forget) pour ne pas ralentir le bot.
   transcriptMessage(msg, key, body).catch(() => {});
 
-  // Ignore nos propres messages et les statuts
-  if (key.fromMe) return;
+  // Les statuts WhatsApp sont ignorés
   if (key.remoteJid === 'status@broadcast') return;
 
-  if (!body || !body.trim()) return;
+  const trimmed = (body || '').trim();
+
+  // Messages envoyés depuis le compte lié (fromMe) : on ne traite QUE les
+  // commandes (qui commencent par ".") afin que l'utilisateur puisse utiliser
+  // le bot depuis son propre WhatsApp. Les réponses du bot (texte normal)
+  // restent ignorées → aucune boucle possible.
+  if (key.fromMe && !trimmed.startsWith('.')) return;
 
   const isGroup = remoteJid.endsWith('@g.us');
 
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
 
-  const trimmed = body.trim();
+  // --- Note vocale : transcription automatique (Whisper) puis réponse IA ---
+  // (vérifiée AVANT le garde-fou "message sans texte" : un vocal n'a pas de
+  // corps de message mais doit quand même être traité)
+  if (rawType === 'audioMessage' && msg.message.audioMessage?.ptt && !trimmed) {
+    debugLog('[vocal] note vocale reçue → transcription…');
+    handleVoiceNote(msg, key, remoteJid, sender).catch((err) => {
+      debugLog(`[vocal] erreur globale : ${err.message}`);
+    });
+    return;
+  }
+
+  // Messages sans texte (photos, vidéos, documents…) : rien à traiter
+  if (!trimmed) return;
 
   // --- Commandes médias gérées directement par le bot (.sticker / .yt) ---
   if (/^\.(sticker|yt|audio)\b/i.test(trimmed)) {
@@ -459,11 +482,11 @@ async function handleMessage(msg) {
     return;
   }
 
-  // --- Note vocale : transcription (Whisper) puis réponse IA ---
-  if (rawType === 'audioMessage' && msg.message.audioMessage?.ptt) {
-    debugLog('[vocal] note vocale reçue → transcription…');
-    handleVoiceNote(msg, key, remoteJid, sender).catch((err) => {
-      debugLog(`[vocal] erreur globale : ${err.message}`);
+  // --- Commande .transcript : transcrire la note vocale citée ---
+  if (/^\.(transcript|transcrire|transcription)\b/i.test(trimmed)) {
+    debugLog(`[transcript] commande : ${trimmed}`);
+    handleTranscriptCommand(msg, remoteJid).catch((err) => {
+      debugLog(`[transcript] erreur : ${err.message}`);
     });
     return;
   }
@@ -730,6 +753,66 @@ async function handleVoiceNote(msg, key, remoteJid, sender) {
   } catch (err) {
     debugLog(`[vocal] erreur traitement : ${err.message}`);
   }
+}
+
+/**
+ * .transcript — transcrit la note vocale CITÉE (réponse ".transcript" à un vocal).
+ *
+ * Fonctionne à la demande, sans dépendre du réglage "transcrire les vocaux"
+ * du panneau : seul une clé GROQ est nécessaire.
+ */
+async function handleTranscriptCommand(msg, remoteJid) {
+  const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  const quotedAudio = quoted?.audioMessage;
+
+  if (!quotedAudio || !quotedAudio.ptt) {
+    return replyError(remoteJid,
+      '🎤 *Commande .transcript*\n'
+      + 'RÉPONDEZ à une note vocale avec `.transcript`\n'
+      + 'pour obtenir sa transcription en texte.', msg);
+  }
+
+  // Message de statut pendant la transcription
+  if (sock) {
+    sock.sendMessage(remoteJid, { text: '🎤 Transcription en cours…' }).catch(() => {});
+  }
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage({ ...msg, message: quoted }, 'buffer', {});
+  } catch (err) {
+    debugLog(`[transcript] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger la note vocale. Réessayez.', msg);
+  }
+
+  const mime = quotedAudio.mimetype || 'audio/ogg; codecs=opus';
+
+  let data;
+  try {
+    const { data: res } = await axios.post(`${FLASK_URL}/api/ai/transcribe`, {
+      audio: buffer.toString('base64'),
+      mime,
+      manual: true, // transcription demandée explicitement : pas besoin du toggle
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 120000,
+    });
+    data = res;
+  } catch (err) {
+    debugLog(`[transcript] erreur backend : ${err.message}`);
+    return replyError(remoteJid, '❌ Erreur lors de la transcription. Réessayez.', msg);
+  }
+
+  if (!data?.transcribed || !data.text) {
+    debugLog(`[transcript] refusé : ${data?.error || 'inconnu'}`);
+    return replyError(remoteJid, `❌ ${data?.error || 'Transcription indisponible.'}`, msg);
+  }
+
+  const text = data.text.trim();
+  debugLog(`[transcript] transcrit (${data.duration_ms || 0} ms) : ${text.slice(0, 120)}`);
+
+  await sendChunks(remoteJid, `🎤 *Transcription*\n\n${text}`, msg);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎤 [transcription demandée] ${text}`);
 }
 
 /**

@@ -353,10 +353,14 @@ def transcribe_audio():
                         "error": "Note vocale trop volumineuse."}), 400
 
     ai_cfg = AIConfig.get()
-    if not ai_cfg.enabled:
-        return jsonify({"ok": True, "transcribed": False, "reason": "ai_disabled"})
-    if not ai_cfg.transcribe_voice:
-        return jsonify({"ok": True, "transcribed": False, "reason": "voice_disabled"})
+    # Transcription "à la demande" (commande .transcript) : on ignore les
+    # réglages enabled / transcribe_voice, seule la clé GROQ est requise.
+    manual = bool(data.get("manual", False))
+    if not manual:
+        if not ai_cfg.enabled:
+            return jsonify({"ok": True, "transcribed": False, "reason": "ai_disabled"})
+        if not ai_cfg.transcribe_voice:
+            return jsonify({"ok": True, "transcribed": False, "reason": "voice_disabled"})
 
     mime = str(data.get("mime", "audio/ogg; codecs=opus")) or "audio/ogg"
     try:
