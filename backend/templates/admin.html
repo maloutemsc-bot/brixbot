@@ -44,6 +44,7 @@
       <h2 id="pageTitle">Tableau de bord</h2>
       <div class="topbar-right">
         <span class="ws-pill unknown" id="wsPillTop">❓ Inconnu</span>
+        <button class="btn small" id="diagBtn" title="Générer un diagnostic complet à coller à votre assistant">🩺 Diagnostic</button>
         <button class="btn-icon" id="refreshBtn" title="Actualiser">⟳</button>
       </div>
     </header>
@@ -323,11 +324,12 @@
             <select id="log-status">
               <option value="">Tous les statuts</option>
               <option value="success">✓ Succès</option>
+              <option value="ignored">🚫 Ignorés</option>
               <option value="error">✗ Erreurs</option>
             </select>
             <select id="log-type">
-              <option value="">Toutes les commandes</option>
-              <option value="false">.search</option>
+              <option value="">Tous les types</option>
+              <option value="false">Commandes</option>
               <option value="true">IA</option>
             </select>
             <button class="btn danger small" id="logs-clear">🗑 Effacer tout</button>
@@ -344,8 +346,9 @@
                 <th>Statut</th>
                 <th>Résultats</th>
                 <th>Temps</th>
-                <th>Erreur</th>
+                <th>Détail</th>
                 <th>Conversation</th>
+                <th>Expéditeur</th>
               </tr>
             </thead>
             <tbody id="logs-body"></tbody>
@@ -416,6 +419,22 @@
       </div>
     </section>
   </main>
+</div>
+
+<!-- ============================ MODAL DIAGNOSTIC ============================ -->
+<div class="modal" id="diagModal" style="display:none">
+  <div class="modal-backdrop" id="diagBackdrop"></div>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>🩺 Diagnostic BrixBot</h3>
+      <button class="btn-icon" id="diagClose" title="Fermer">✕</button>
+    </div>
+    <p class="hint">Copiez ce texte et collez-le dans la conversation avec votre assistant pour l'aider à diagnostiquer.</p>
+    <pre class="diag-pre" id="diagContent">Génération…</pre>
+    <div class="card-actions">
+      <button class="btn primary" id="diagCopy">📋 Copier le diagnostic</button>
+    </div>
+  </div>
 </div>
 
 <div id="toasts"></div>

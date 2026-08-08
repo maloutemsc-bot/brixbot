@@ -132,6 +132,7 @@ class CommandLog(db.Model):
     timestamp = db.Column(db.String(40), default=utc_now_iso)
     is_ai = db.Column(db.Boolean, default=False)            # True si généré par l'IA
     chat = db.Column(db.String(100), default="")            # conversation (jid)
+    sender = db.Column(db.String(100), default="")          # expéditeur (jid)
 
     def to_dict(self):
         return {
@@ -145,6 +146,7 @@ class CommandLog(db.Model):
             "timestamp": self.timestamp,
             "is_ai": bool(self.is_ai),
             "chat": self.chat or "",
+            "sender": self.sender or "",
         }
 
 
@@ -223,6 +225,7 @@ def _ensure_columns(app):
         ],
         "command_logs": [
             ("chat", "VARCHAR(100) DEFAULT ''"),
+            ("sender", "VARCHAR(100) DEFAULT ''"),
         ],
     }.items():
         for column_name, definition in columns:

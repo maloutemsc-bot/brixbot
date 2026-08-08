@@ -474,7 +474,7 @@ def get_logs():
         page, per_page = 1, 20
 
     query = CommandLog.query
-    if status in ("success", "error"):
+    if status in ("success", "error", "ignored"):
         query = query.filter_by(status=status)
     if is_ai in ("true", "false"):
         query = query.filter_by(is_ai=(is_ai == "true"))
@@ -501,6 +501,74 @@ def clear_logs():
     AILog.query.delete()
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- #
+#  Diagnostic complet (panneau → copier/coller à l'assistant)
+# --------------------------------------------------------------------------- #
+@app.route("/api/debug/dump", methods=["GET"])
+@require_admin
+@limiter.limit("10 per minute")
+def debug_dump():
+    """
+    Export de diagnostic : config (clés masquées), état des services, derniers
+    logs, et le journal du bot. L'utilisateur colle ce JSON à son assistant
+    pour résoudre un problème sans avoir à décrire les symptômes.
+    """
+    def mask(value):
+        value = str(value or "")
+        if not value:
+            return ""
+        if len(value) <= 8:
+            return "***"
+        return value[:4] + "…" + f" ({len(value)} caractères)"
+
+    # Dernières lignes du journal du bot (si le fichier existe)
+    bot_log_lines = []
+    bot_log_path = os.path.join(BASE_DIR, "..", "whatsapp-bot", "bot-messages.log")
+    try:
+        if os.path.exists(bot_log_path):
+            with open(bot_log_path, "r", encoding="utf-8", errors="replace") as fh:
+                bot_log_lines = fh.readlines()[-40:]
+    except OSError:
+        pass
+
+    # Santé du bot (via son endpoint interne)
+    bot_health = None
+    try:
+        response = requests.get(f"{BOT_INTERNAL_URL}/health", timeout=3)
+        if response.status_code == 200:
+            bot_health = response.json()
+    except requests.exceptions.RequestException:
+        bot_health = {"error": "bot injoignable"}
+
+    recent = CommandLog.query.order_by(CommandLog.id.desc()).limit(30).all()
+    ai_recent = AILog.query.order_by(AILog.id.desc()).limit(10).all()
+
+    bot_cfg = BotConfig.get()
+    ai_cfg = AIConfig.get()
+
+    return jsonify({
+        "generated_at": utc_now_iso(),
+        "services": {
+            "backend": {"ok": True, "whatsapp": WHATSAPP_STATE.get("status")},
+            "bot": bot_health,
+        },
+        "environnement": {
+            "OWNER_NUMBER": "défini" if os.environ.get("OWNER_NUMBER", "").strip() else "vide/absent",
+            "GROQ_API_KEY": "défini" if os.environ.get("GROQ_API_KEY", "").strip() else "vide/absent",
+            "BRIX_API_KEY": "défini" if os.environ.get("BRIX_API_KEY", "").strip() else "vide/absent",
+            "ADMIN_PASSWORD": "défini" if os.environ.get("ADMIN_PASSWORD", "").strip() else "vide",
+            "BOT_API_KEY": "défini" if os.environ.get("BOT_API_KEY", "").strip() else "défaut",
+            "SECRET_KEY": "défini" if os.environ.get("SECRET_KEY", "").strip() else "défaut",
+        },
+        "bot_config": {**bot_cfg.to_dict(), "api_key": mask(bot_cfg.api_key)},
+        "ai_config": {**ai_cfg.to_dict(), "api_key": mask(ai_cfg.api_key)},
+        "stats": _compute_stats(),
+        "derniers_logs": [log.to_dict() for log in recent],
+        "logs_ia": [log.to_dict() for log in ai_recent],
+        "journal_bot": "".join(bot_log_lines),
+    })
 
 
 # --------------------------------------------------------------------------- #

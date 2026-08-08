@@ -186,27 +186,42 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
     """
     Traite un message WhatsApp reçu via l'API /api/message.
 
+    Chaque message reçu est journalisé dans command_logs, MÊME ceux qui sont
+    ignorés, avec le motif exact : le panneau montre ainsi tout le trafic.
+
     Renvoie un dict :
       {"reply": "..."}  → le bot doit répondre ce texte
       {"ignore": True}  → le bot ne répond rien
     """
     body = (body or "").strip()
+    start = time.perf_counter()
+
     if not body:
+        _log_command("MSG", "", 0, "ignored", "Message vide (sans texte)", 0.0,
+                     chat=remote_jid, sender=sender)
         return {"ignore": True}
 
     # 1) Commandes de recherche BrixHub
     if re.match(r"^\.search(?:\s|$)", body, re.IGNORECASE):
-        return _handle_search(body, remote_jid)
+        return _handle_search(body, remote_jid, sender, is_group, start)
     if re.match(r"^\.tel(?:\s|$)", body, re.IGNORECASE):
-        return _handle_tel(body, remote_jid)
+        return _handle_tel(body, remote_jid, sender, is_group, start)
 
     # 2) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
         if not os.environ.get("OWNER_NUMBER", "").strip():
-            return {"reply": OWNER_HINT}  # aide à la configuration
+            _log_command(".ia", body[:500], 0, "success",
+                         "Aide affichée (OWNER_NUMBER non configuré)", 0.0,
+                         chat=remote_jid, sender=sender)
+            return {"reply": OWNER_HINT}
         if not _is_owner(sender):
-            return {"ignore": True}  # non-propriétaire : on ignore poliment
-        return _handle_ia(body, sender, remote_jid)
+            _log_command(".ia", body[:500], 0, "ignored", "Non propriétaire", 0.0,
+                         chat=remote_jid, sender=sender)
+            return {"ignore": True}
+        result = _handle_ia(body, sender, remote_jid)
+        _log_command(".ia", body[:500], 0, "success", "", 0.0,
+                     chat=remote_jid, sender=sender)
+        return result
 
     # 3) IA automatique (si activée et conversation autorisée)
     ai_cfg = AIConfig.get()
@@ -215,33 +230,44 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
 
     # 4) Réponse par défaut (message ignoré par l'IA mais réponse auto active)
     bot_cfg = BotConfig.get()
+    elapsed = time.perf_counter() - start
     if bot_cfg.auto_response:
+        _log_command("AUTO", body[:500], 0, "success",
+                     "Réponse automatique par défaut", elapsed,
+                     chat=remote_jid, sender=sender)
         return {"reply": DEFAULT_RESPONSE}
 
-    # 5) Ignorer — si l'IA est active mais que la conversation n'est pas
-    #    autorisée par la whitelist, on journalise pour que le refus soit
-    #    visible dans le panneau (onglet Logs).
+    # 5) Ignorer — on journalise TOUT message non traité avec le motif exact.
     if ai_cfg.enabled:
         _log_command("IA", body[:500], 0, "ignored",
-                     "Conversation non autorisée (whitelist IA)", 0.0,
-                     is_ai=True, chat=remote_jid)
+                     "Conversation non autorisée (whitelist IA)", elapsed,
+                     is_ai=True, chat=remote_jid, sender=sender)
+    else:
+        _log_command("MSG", body[:500], 0, "ignored",
+                     "IA désactivée et réponse auto désactivée", elapsed,
+                     chat=remote_jid, sender=sender)
     return {"ignore": True}
 
 
 # --------------------------------------------------------------------------- #
 #  Commande .search
 # --------------------------------------------------------------------------- #
-def _handle_search(body, remote_jid=""):
+def _handle_search(body, remote_jid="", sender="", is_group=False, start=None):
     """Exécute une recherche par nom et renvoie le message de réponse."""
     cfg = BotConfig.get()
     query = re.sub(r"^\.search\s*", "", body, flags=re.IGNORECASE).strip()
-    start = time.perf_counter()
+    start = start if start is not None else time.perf_counter()
 
     if not cfg.command_enabled:
+        _log_command(".search", query, 0, "success",
+                     "Commande désactivée par l'admin",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": "❌ La commande `.search` est actuellement désactivée par l'administrateur."}
 
     nom, prenom, ville = _parse_query(query)
     if not nom:
+        _log_command(".search", query, 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": USAGE_SEARCH}
 
     try:
@@ -250,11 +276,12 @@ def _handle_search(body, remote_jid=""):
         label = build_label(nom, prenom, ville)
         reply = format_results(result, label, elapsed, hint=f".search {nom}")
         _log_command(".search", query, len(result["results"]), "success", "",
-                     elapsed, chat=remote_jid)
+                     elapsed, chat=remote_jid, sender=sender)
         return {"reply": reply}
     except brixhub_service.BrixHubError as exc:
         elapsed = time.perf_counter() - start
-        _log_command(".search", query, 0, "error", exc.message, elapsed, chat=remote_jid)
+        _log_command(".search", query, 0, "error", exc.message, elapsed,
+                     chat=remote_jid, sender=sender)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
 
@@ -262,17 +289,22 @@ def _handle_search(body, remote_jid=""):
 # --------------------------------------------------------------------------- #
 #  Commande .tel
 # --------------------------------------------------------------------------- #
-def _handle_tel(body, remote_jid=""):
+def _handle_tel(body, remote_jid="", sender="", is_group=False, start=None):
     """Exécute une recherche par numéro de téléphone et renvoie la réponse."""
     cfg = BotConfig.get()
     query = re.sub(r"^\.tel\s*", "", body, flags=re.IGNORECASE).strip()
-    start = time.perf_counter()
+    start = start if start is not None else time.perf_counter()
 
     if not cfg.command_enabled:
+        _log_command(".tel", query, 0, "success",
+                     "Commande désactivée par l'admin",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": "❌ La commande `.tel` est actuellement désactivée par l'administrateur."}
 
     number = _parse_phone(query)
     if not number:
+        _log_command(".tel", query, 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": USAGE_TEL}
 
     try:
@@ -280,11 +312,12 @@ def _handle_tel(body, remote_jid=""):
         elapsed = time.perf_counter() - start
         reply = format_results(result, number, elapsed, hint=f".tel {number}")
         _log_command(".tel", query, len(result["results"]), "success", "",
-                     elapsed, chat=remote_jid)
+                     elapsed, chat=remote_jid, sender=sender)
         return {"reply": reply}
     except brixhub_service.BrixHubError as exc:
         elapsed = time.perf_counter() - start
-        _log_command(".tel", query, 0, "error", exc.message, elapsed, chat=remote_jid)
+        _log_command(".tel", query, 0, "error", exc.message, elapsed,
+                     chat=remote_jid, sender=sender)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
 
@@ -456,7 +489,8 @@ def _handle_ai(body, sender, remote_jid, is_group):
         reply, model, tokens, duration_ms = ai_service.chat(body, history=history)
         elapsed = (time.perf_counter() - start) / 1000.0
 
-        _log_command("IA", body[:500], 1, "success", "", elapsed, is_ai=True, chat=remote_jid)
+        _log_command("IA", body[:500], 1, "success", "", elapsed, is_ai=True,
+                     chat=remote_jid, sender=sender)
         db.session.add(AILog(
             sender=(sender or "inconnu")[:100],
             user_message=body[:6000],
@@ -475,7 +509,8 @@ def _handle_ai(body, sender, remote_jid, is_group):
         return {"reply": reply}
     except ai_service.AIError as exc:
         elapsed = (time.perf_counter() - start) / 1000.0
-        _log_command("IA", body[:500], 0, "error", exc.message, elapsed, is_ai=True, chat=remote_jid)
+        _log_command("IA", body[:500], 0, "error", exc.message, elapsed, is_ai=True,
+                     chat=remote_jid, sender=sender)
         prefix = "⚠️ " if exc.is_config else "❌ "
         return {"reply": f"{prefix}{exc.message}"}
 
@@ -484,7 +519,7 @@ def _handle_ai(body, sender, remote_jid, is_group):
 #  Journalisation
 # --------------------------------------------------------------------------- #
 def _log_command(command, query, results_count, status, error, response_time,
-                 is_ai=False, chat=""):
+                 is_ai=False, chat="", sender=""):
     """Enregistre une ligne dans la table command_logs."""
     db.session.add(CommandLog(
         command=command,
@@ -495,5 +530,6 @@ def _log_command(command, query, results_count, status, error, response_time,
         response_time=round(response_time or 0.0, 3),
         is_ai=is_ai,
         chat=(chat or "")[:100],
+        sender=(sender or "")[:100],
     ))
     db.session.commit()

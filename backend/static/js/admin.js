@@ -322,7 +322,7 @@
       const body = $('#logs-body');
 
       if (!data.logs.length) {
-        body.innerHTML = '<tr><td colspan="8" class="empty">Aucune commande enregistrée.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="empty">Aucune commande enregistrée.</td></tr>';
       } else {
         body.innerHTML = data.logs.map((log) => `
           <tr>
@@ -334,6 +334,7 @@
             <td class="nowrap">${Math.round(log.response_time * 1000)} ms</td>
             <td class="trunc">${esc(log.error || '')}</td>
             <td class="trunc" title="${esc(log.chat || '')}">${esc(log.chat || '—')}</td>
+            <td class="trunc" title="${esc(log.sender || '')}">${esc(log.sender || '—')}</td>
           </tr>`).join('');
       }
 
@@ -351,6 +352,42 @@
       state.logsPage = 1;
       loadLogs();
     } catch (err) { toast(err.message, 'error'); }
+  }
+
+  /* --------------------------------------------------------------------------
+     Diagnostic
+     -------------------------------------------------------------------------- */
+
+  async function openDiagnostic() {
+    const modal = $('#diagModal');
+    const content = $('#diagContent');
+    modal.style.display = '';
+    content.textContent = 'Génération du diagnostic…';
+    try {
+      const data = await api('/api/debug/dump');
+      content.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      content.textContent = `Erreur : ${err.message}`;
+    }
+  }
+
+  function closeDiagnostic() {
+    $('#diagModal').style.display = 'none';
+  }
+
+  async function copyDiagnostic() {
+    try {
+      await navigator.clipboard.writeText($('#diagContent').textContent);
+      toast('Diagnostic copié 📋');
+    } catch (_) {
+      const range = document.createRange();
+      range.selectNodeContents($('#diagContent'));
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('copy');
+      toast('Diagnostic copié (sélection) 📋');
+    }
   }
 
   /* --------------------------------------------------------------------------
@@ -395,6 +432,11 @@
   $$('.nav-link').forEach((link) => link.addEventListener('click', () => switchTab(link.dataset.tab)));
 
   $('#menuBtn').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
+
+  $('#diagBtn').addEventListener('click', openDiagnostic);
+  $('#diagClose').addEventListener('click', closeDiagnostic);
+  $('#diagBackdrop').addEventListener('click', closeDiagnostic);
+  $('#diagCopy').addEventListener('click', copyDiagnostic);
 
   // Bouton de déconnexion (masqué si l'authentification est désactivée)
   if (!window.BRIXBOT_AUTH) {

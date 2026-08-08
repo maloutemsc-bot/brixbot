@@ -17,6 +17,8 @@
 
 require('dotenv').config();
 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const axios = require('axios');
 const pino = require('pino');
@@ -74,6 +76,23 @@ const AUTH_DIR = process.env.AUTH_DIR || 'auth_info';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
 
 const logger = pino({ level: LOG_LEVEL });
+
+/* -------------------------------------------------------------------------- */
+/*  Journal de débogage (bot-messages.log)                                    */
+/* -------------------------------------------------------------------------- */
+
+// Trace chaque message reçu et son traitement : indispensable pour comprendre
+// pourquoi "le message est arrivé mais le bot n'a rien répondu". Le fichier est
+// tronqué automatiquement au-delà de 2 Mo pour ne jamais grossir indéfiniment.
+const MSG_LOG = path.join(__dirname, 'bot-messages.log');
+function debugLog(line) {
+  try {
+    if (fs.existsSync(MSG_LOG) && fs.statSync(MSG_LOG).size > 2 * 1024 * 1024) {
+      fs.writeFileSync(MSG_LOG, '');
+    }
+    fs.appendFileSync(MSG_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch (_) { /* le journal ne doit jamais bloquer le bot */ }
+}
 
 let sock = null;
 let currentStatus = 'disconnected'; // disconnected | connecting | qr | connected
@@ -171,6 +190,7 @@ async function startBot() {
 
       if (qr) {
         currentStatus = 'qr';
+        debugLog('[connexion] QR code généré');
         console.log('\n📱 Scannez le QR code ci-dessous pour connecter WhatsApp :\n');
         try {
           qrcodeTerminal.generate(qr, { small: true });
@@ -196,15 +216,18 @@ async function startBot() {
       if (connection === 'open') {
         currentStatus = 'connected';
         lastQr = null; // plus besoin du QR
+        debugLog(`[connexion] ouverte : ${sock.user?.id || 'inconnu'}`);
         console.log('✅ WhatsApp connecté :', sock.user?.id || 'inconnu');
         await notifyBackend('connected', { number: sock.user?.id || null });
       } else if (connection === 'connecting') {
         currentStatus = 'connecting';
+        debugLog('[connexion] en cours…');
         console.log('⏳ Connexion en cours…');
       } else if (connection === 'close') {
         currentStatus = 'disconnected';
         const code = lastDisconnect?.error?.output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
+        debugLog(`[connexion] fermée (code ${code})`);
         console.log(`❌ Connexion fermée (code ${code})`);
         sock = null; // plus aucun socket actif
         // Non bloquant : ne jamais retarder la reconnexion par un appel au backend.
@@ -227,9 +250,13 @@ async function startBot() {
 
     // Messages entrants
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      debugLog(`[upsert] type=${type} nb=${messages.length}`);
       if (type !== 'notify') return;
       for (const msg of messages) {
-        handleMessage(msg).catch((err) => console.error('[message] Erreur :', err.message));
+        handleMessage(msg).catch((err) => {
+          debugLog(`[ERREUR] traitement du message : ${err.message}`);
+          console.error('[message] Erreur :', err.message);
+        });
       }
     });
 
@@ -264,19 +291,25 @@ function extractText(msg) {
  * Traite un message : l'envoie au backend Flask puis renvoie la réponse.
  */
 async function handleMessage(msg) {
-  // Ignore nos propres messages et les statuts
-  if (msg.key?.fromMe) return;
-  if (msg.key?.remoteJid === 'status@broadcast') return;
-
+  const key = msg.key || {};
+  const rawType = Object.keys(msg.message || {})[0] || '?';
   const body = extractText(msg);
+  debugLog(`[recu] fromMe=${!!key.fromMe} jid=${key.remoteJid || '?'} `
+    + `participant=${key.participant || ''} type=${rawType} `
+    + `corps="${(body || '').slice(0, 100).replace(/\n/g, ' ')}"`);
+
+  // Ignore nos propres messages et les statuts
+  if (key.fromMe) return;
+  if (key.remoteJid === 'status@broadcast') return;
+
   if (!body || !body.trim()) return;
 
-  const remoteJid = msg.key.remoteJid;
-  const sender = msg.key.participant || remoteJid;
+  const remoteJid = key.remoteJid;
+  const sender = key.participant || remoteJid;
   const isGroup = remoteJid.endsWith('@g.us');
 
   // Marque le message comme lu
-  if (sock) sock.readMessages([msg.key]).catch(() => {});
+  if (sock) sock.readMessages([key]).catch(() => {});
 
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
@@ -284,16 +317,24 @@ async function handleMessage(msg) {
       remoteJid,
       body: body.trim(),
       isGroup,
-      messageId: msg.key.id,
+      messageId: key.id,
       timestamp: msg.messageTimestamp,
     }, {
       headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
       timeout: 90000,
     });
 
-    if (data?.ignore) return;                      // le backend ne veut pas répondre
-    if (data?.reply) await sendChunks(remoteJid, data.reply, msg);
+    if (data?.ignore) {
+      debugLog(`[traite] jid=${remoteJid} → ignoré par le backend`);
+      return; // le backend ne veut pas répondre
+    }
+    if (data?.reply) {
+      debugLog(`[traite] jid=${remoteJid} → réponse ${data.reply.length} caractères`);
+      await sendChunks(remoteJid, data.reply, msg);
+      debugLog(`[envoye] jid=${remoteJid} → réponse envoyée`);
+    }
   } catch (err) {
+    debugLog(`[ERREUR] jid=${remoteJid} : ${err.message}`);
     console.error('Erreur lors du traitement du message :', err.message);
   }
 }
