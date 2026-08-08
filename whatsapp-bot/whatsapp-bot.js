@@ -482,6 +482,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .meta : métadonnées du message cité ---
+  if (/^\.meta\b/i.test(trimmed)) {
+    debugLog(`[meta] commande : ${trimmed}`);
+    handleMetaCommand(msg, remoteJid).catch((err) => {
+      debugLog(`[meta] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande secrète : simulation (à découvrir !) ---
   if (/^\.hack\b/i.test(trimmed)) {
     debugLog(`[secrete] commande : ${trimmed}`);
@@ -711,6 +720,175 @@ async function handleExtractCommand(msg, remoteJid) {
     debugLog(`[extract] envoi impossible : ${err.message}`);
     return replyError(remoteJid, '❌ Envoi du média impossible.', msg);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .meta — métadonnées du message cité                              */
+/* -------------------------------------------------------------------------- */
+
+/** Formate une taille d'octets en lisible (Ko / Mo, virgule française). */
+function humanSize(bytes) {
+  const n = Number(bytes);
+  if (!n || n <= 0) return '?';
+  if (n < 1024) return `${n} o`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1).replace('.', ',')} Ko`;
+  return `${(n / (1024 * 1024)).toFixed(2).replace('.', ',')} Mo`;
+}
+
+/** Formate une durée en secondes → "m:ss" (ex: 3:05). */
+function formatDuration(seconds) {
+  const s = Math.round(Number(seconds) || 0);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** Tronque proprement une empreinte binaire (Buffer / Uint8Array / chaîne). */
+function safeSlice(value, length) {
+  if (!value) return '';
+  try {
+    if (Buffer.isBuffer(value)) return value.toString('base64').slice(0, length);
+    if (value instanceof Uint8Array) return Buffer.from(value).toString('base64').slice(0, length);
+  } catch (_) { /* on retombe sur la conversion chaîne */ }
+  return String(value).slice(0, length);
+}
+
+/** Ligne "Transféré" quand le message a été renvoyé (forwardingScore). */
+function addForwarding(lines, contextInfo, mediaForwarded) {
+  const score = Number(contextInfo?.forwardingScore) || 0;
+  const forwarded = contextInfo?.isForwarded || mediaForwarded || score > 0;
+  if (forwarded) {
+    lines.push(score > 1 ? `• 🔁 Transféré : oui (${score}×)` : '• 🔁 Transféré : oui');
+  }
+}
+
+/** Lignes communes des médias (format, poids, empreinte). */
+function addMediaBase(lines, media) {
+  if (media.mimetype) lines.push(`• 📦 Format : ${media.mimetype}`);
+  if (media.fileLength) lines.push(`• ⚖️ Poids : ${humanSize(media.fileLength)}`);
+  if (media.fileSha256) lines.push(`• 🔑 Empreinte SHA-256 : ${safeSlice(media.fileSha256, 14)}…`);
+}
+
+/**
+ * Construit la liste des lignes de métadonnées pour un message WhatsApp.
+ * Chaque type (texte, image, vidéo, audio, document, sticker, contact,
+ * localisation) expose ses propres champs.
+ */
+function buildMetaLines(sm) {
+  const lines = ['🔍 *Métadonnées du message*'];
+  const ctx = sm.contextInfo || {};
+
+  if (sm.conversation) {
+    lines.push('💬 *Texte*');
+    lines.push(`• 🔤 Longueur : ${sm.conversation.length} caractère(s)`);
+    addForwarding(lines, ctx);
+  } else if (sm.extendedTextMessage) {
+    const et = sm.extendedTextMessage;
+    lines.push('💬 *Texte*');
+    if (et.text) lines.push(`• 🔤 Longueur : ${et.text.length} caractère(s)`);
+    if (et.matchedText) lines.push(`• 🔗 Lien détecté : ${et.matchedText}`);
+    if (et.title) lines.push(`• 🏷 Titre : ${et.title.slice(0, 60)}`);
+    if (et.description) lines.push(`• 📝 Description : ${et.description.slice(0, 80)}`);
+    if (et.canonicalUrl) lines.push(`• 🌐 URL : ${et.canonicalUrl}`);
+    const mentions = (et.contextInfo?.mentionedJid || []).map(contactLabel).join(', ');
+    if (mentions) lines.push(`• 👥 Mentions : ${mentions}`);
+    addForwarding(lines, et.contextInfo);
+  } else if (sm.imageMessage) {
+    const im = sm.imageMessage;
+    lines.push('📷 *Image*');
+    addMediaBase(lines, im);
+    if (im.width && im.height) lines.push(`• 📐 Dimensions : ${im.width} × ${im.height} px`);
+    if (im.caption) lines.push(`• 🏷 Légende : ${im.caption.slice(0, 80)}`);
+    addForwarding(lines, ctx, im.isForwarded);
+  } else if (sm.videoMessage) {
+    const vm = sm.videoMessage;
+    lines.push('🎬 *Vidéo*');
+    addMediaBase(lines, vm);
+    if (vm.width && vm.height) lines.push(`• 📐 Dimensions : ${vm.width} × ${vm.height} px`);
+    if (vm.seconds) lines.push(`• ⏱ Durée : ${formatDuration(vm.seconds)}`);
+    if (vm.caption) lines.push(`• 🏷 Légende : ${vm.caption.slice(0, 80)}`);
+    addForwarding(lines, ctx, vm.isForwarded);
+  } else if (sm.audioMessage) {
+    const am = sm.audioMessage;
+    lines.push(am.ptt ? '🎤 *Note vocale*' : '🎵 *Audio*');
+    addMediaBase(lines, am);
+    if (am.seconds) lines.push(`• ⏱ Durée : ${formatDuration(am.seconds)}`);
+    if (am.ptt) lines.push('• 🗣 Format : note vocale (ptt)');
+    addForwarding(lines, ctx, am.isForwarded);
+  } else if (sm.documentMessage) {
+    const dm = sm.documentMessage;
+    lines.push('📄 *Document*');
+    addMediaBase(lines, dm);
+    if (dm.fileName) lines.push(`• 🏷 Nom : ${dm.fileName}`);
+    if (dm.pageCount) lines.push(`• 📄 Pages : ${dm.pageCount}`);
+    if (dm.title) lines.push(`• 🏷 Titre : ${dm.title.slice(0, 60)}`);
+    addForwarding(lines, ctx, dm.isForwarded);
+  } else if (sm.stickerMessage) {
+    const st = sm.stickerMessage;
+    lines.push('🖼 *Sticker*');
+    addMediaBase(lines, st);
+    if (st.width && st.height) lines.push(`• 📐 Dimensions : ${st.width} × ${st.height} px`);
+    if (st.isAnimated) lines.push('• ✨ Animé : oui');
+    if (st.isAvatar) lines.push('• 👤 Avatar : oui');
+    addForwarding(lines, ctx);
+  } else if (sm.contactMessage) {
+    const cm = sm.contactMessage;
+    lines.push('👤 *Contact*');
+    if (cm.displayName) lines.push(`• 🏷 Nom : ${cm.displayName}`);
+    if (cm.vcard) lines.push(`• 📇 vCard : ${cm.vcard.replace(/\n/g, ' ').slice(0, 120)}…`);
+  } else if (sm.locationMessage) {
+    const lm = sm.locationMessage;
+    lines.push('📍 *Localisation*');
+    if (lm.degreesLatitude != null) lines.push(`• 🧭 Latitude : ${lm.degreesLatitude}`);
+    if (lm.degreesLongitude != null) lines.push(`• 🧭 Longitude : ${lm.degreesLongitude}`);
+    if (lm.degreesAccuracyInMeters) lines.push(`• 🎯 Précision : ${lm.degreesAccuracyInMeters} m`);
+    if (lm.comment) lines.push(`• 📝 Commentaire : ${lm.comment}`);
+  } else {
+    lines.push('• ℹ️ Type de message non analysable.');
+  }
+  return lines;
+}
+
+/**
+ * .meta — affiche les métadonnées du message CITÉ (image, texte, audio…).
+ *
+ * Répondez à n'importe quel message avec `.meta` : le bot détaille ses
+ * métadonnées techniques (format, taille, dimensions, durée, liens…).
+ * Une photo envoyée avec la légende `.meta` est également analysée.
+ */
+async function handleMetaCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+
+  // Message cible : message cité, sinon message courant s'il contient un média
+  let target = null;
+  let quotedCtx = null;
+  if (quoted) {
+    target = quoted;
+    quotedCtx = ctx;
+  } else if (current.imageMessage || current.videoMessage || current.audioMessage
+    || current.documentMessage || current.stickerMessage
+    || current.contactMessage || current.locationMessage) {
+    target = current;
+  }
+
+  if (!target) {
+    return replyError(remoteJid,
+      '🔍 *Commande .meta*\n'
+      + 'RÉPONDEZ à n\'importe quel message (image, texte, audio, vidéo…)\n'
+      + 'avec `.meta` pour voir ses métadonnées.\n'
+      + '— ou —\n'
+      + 'Envoyez une photo avec la légende `.meta`.', msg);
+  }
+
+  const lines = buildMetaLines(target);
+  if (quotedCtx) {
+    const sender = quotedCtx.participant || quotedCtx.remoteJid || '';
+    if (sender) lines.push(`🧑 *De* : ${contactLabel(sender)}`);
+    if (quotedCtx.stanzaId) lines.push(`🆔 *ID du message* : ${String(quotedCtx.stanzaId).slice(0, 10)}…`);
+  }
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[meta] métadonnées affichées (${lines.length} lignes)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔍 [métadonnées affichées]`);
 }
 
 /**

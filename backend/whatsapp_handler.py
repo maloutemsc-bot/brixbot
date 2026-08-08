@@ -97,6 +97,7 @@ HELP_TEXT = (
     "🎵 `.yt lien` — télécharge l'audio d'une vidéo YouTube.\n"
     "🎤 `.transcript` (réponse à un vocal) — transcrit la note vocale.\n"
     "📥 `.extract` (réponse à une image/vocal) — renvoie le média dans le chat.\n"
+    "🔍 `.meta` (réponse à un message) — affiche ses métadonnées techniques.\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
