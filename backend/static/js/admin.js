@@ -435,6 +435,27 @@
 
   $('#menuBtn').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
 
+  $('#transcriptBtn').addEventListener('click', async () => {
+    try {
+      const response = await fetch('/api/transcript');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Erreur HTTP ${response.status}`);
+      }
+      // Télécharge le fichier en utilisant le nom proposé par le serveur
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'transcript.txt';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast('Transcript téléchargé 📄');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
   $('#diagBtn').addEventListener('click', openDiagnostic);
   $('#diagClose').addEventListener('click', closeDiagnostic);
   $('#diagBackdrop').addEventListener('click', closeDiagnostic);

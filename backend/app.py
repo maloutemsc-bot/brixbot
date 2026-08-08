@@ -377,6 +377,26 @@ def update_whatsapp_status():
     return jsonify({"ok": True})
 
 
+@app.route("/api/transcript", methods=["GET"])
+@require_admin
+@limiter.limit("20 per minute")
+def get_transcript():
+    """
+    Télécharge le journal des conversations (transcript.txt) écrit par le bot.
+    Le fichier vit dans whatsapp-bot/ ; on le lit directement sur disque.
+    """
+    transcript_path = os.path.join(BASE_DIR, "..", "whatsapp-bot", "transcript.txt")
+    try:
+        if not os.path.exists(transcript_path):
+            return jsonify({"ok": False, "error": "Le transcript est vide ou désactivé."}), 404
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+        return content, 200, {"Content-Type": "text/plain; charset=utf-8",
+                              "Content-Disposition": 'attachment; filename="transcript.txt"'}
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"Lecture impossible : {exc}"}), 500
+
+
 @app.route("/api/whatsapp/restart", methods=["POST"])
 @require_admin
 @limiter.limit("10 per minute")

@@ -85,6 +85,10 @@ const BOT_PORT = parseInt(process.env.BOT_PORT || '3000', 10);
 const BOT_API_KEY = process.env.BOT_API_KEY || 'changez-moi-bot';
 const AUTH_DIR = process.env.AUTH_DIR || 'auth_info';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
+// Fichier du journal de conversations (transcript).
+// Désactivable : TRANSCRIPT_ENABLED=0
+const TRANSCRIPT_ENABLED = process.env.TRANSCRIPT_ENABLED !== '0';
+const TRANSCRIPT_FILE = path.join(__dirname, process.env.TRANSCRIPT_FILE || 'transcript.txt');
 
 const logger = pino({ level: LOG_LEVEL });
 
@@ -103,6 +107,70 @@ function debugLog(line) {
     }
     fs.appendFileSync(MSG_LOG, `${new Date().toISOString()} ${line}\n`);
   } catch (_) { /* le journal ne doit jamais bloquer le bot */ }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Journal des conversations (transcript.txt)                                 */
+/* -------------------------------------------------------------------------- */
+
+// Le transcript enregistre TOUS les messages échangés au format lisible :
+//     [2026-08-08 17:45] Marie : Bonjour !
+//     [2026-08-08 17:45] 🤖 BrixBot : Salut Marie !
+// Le fichier est tronqué automatiquement au-delà de 5 Mo.
+function transcriptLog(line) {
+  if (!TRANSCRIPT_ENABLED) return;
+  try {
+    if (fs.existsSync(TRANSCRIPT_FILE) && fs.statSync(TRANSCRIPT_FILE).size > 5 * 1024 * 1024) {
+      fs.writeFileSync(TRANSCRIPT_FILE, '');
+    }
+    fs.appendFileSync(TRANSCRIPT_FILE, `${line}\n`, 'utf8');
+  } catch (_) { /* le journal ne doit jamais bloquer le bot */ }
+}
+
+// Cache du nom des groupes (récupérés via groupMetadata, coûteux en réseau)
+const groupNameCache = new Map();
+
+/**
+ * Formate une date en heure locale lisible : "2026-08-08 17:45".
+ */
+function fmtStamp(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * Nom lisible d'un numéro (jid) : contact ou numéro brut.
+ */
+function contactLabel(jid) {
+  const local = (jid || '').split('@')[0].split(':')[0];
+  if (!local) return 'Inconnu';
+  if (/^\d+$/.test(local)) return local; // numéro
+  return local; // identifiant non numérique (ex: groupe)
+}
+
+/**
+ * Résout le nom affiché d'un expéditeur :
+ *   - en groupe : nom du groupe (groupMetadata, mis en cache)
+ *   - en privé   : pushName du contact (nom qu'il s'est donné sur WhatsApp)
+ *   - sinon      : numéro de téléphone
+ */
+async function resolveSenderName(remoteJid, sender, pushName) {
+  const isGroup = remoteJid && remoteJid.endsWith('@g.us');
+  if (isGroup) {
+    if (groupNameCache.has(remoteJid)) return groupNameCache.get(remoteJid);
+    if (sock && typeof sock.groupMetadata === 'function') {
+      try {
+        const meta = await sock.groupMetadata(remoteJid);
+        const subject = meta?.subject || contactLabel(remoteJid);
+        groupNameCache.set(remoteJid, subject);
+        return subject;
+      } catch (_) { /* groupe inaccessible : on retombe sur le numéro */ }
+    }
+    groupNameCache.set(remoteJid, contactLabel(remoteJid));
+    return contactLabel(remoteJid);
+  }
+  return (pushName && String(pushName).trim()) || contactLabel(sender || remoteJid);
 }
 
 let sock = null;
@@ -301,6 +369,48 @@ function extractText(msg) {
 /**
  * Traite un message : l'envoie au backend Flask puis renvoie la réponse.
  */
+// Étiquette lisible pour un message sans texte (photo, vidéo, audio…)
+const MEDIA_LABELS = {
+  imageMessage: '📷 [photo]',
+  videoMessage: '🎬 [vidéo]',
+  audioMessage: '🎵 [audio]',
+  stickerMessage: '🖼 [sticker]',
+  documentMessage: '📄 [document]',
+  locationMessage: '📍 [localisation]',
+  contactMessage: '👤 [contact]',
+  reactionMessage: '👍 [réaction]',
+};
+
+/**
+ * Journalise un message échangé dans le transcript.
+ *
+ * Le nom du contact est résolu en tâche de fond (groupMetadata peut prendre
+ * quelques centaines de ms) : on n'attend JAMAIS cette résolution pour
+ * continuer le traitement du message.
+ */
+async function transcriptMessage(msg, key, body) {
+  if (!TRANSCRIPT_ENABLED || !key?.remoteJid || key.remoteJid === 'status@broadcast') return;
+  const rawType = Object.keys(msg.message || {})[0] || '?';
+  const remoteJid = key.remoteJid;
+  const sender = key.participant || remoteJid;
+  const stamp = fmtStamp(new Date());
+
+  let content;
+  if (body && body.trim()) {
+    content = body.trim();
+  } else {
+    content = MEDIA_LABELS[rawType] || (rawType !== '?' ? `📎 [${rawType}]` : '[message sans texte]');
+  }
+
+  if (key.fromMe) {
+    transcriptLog(`[${stamp}] 🤖 BrixBot : ${content}`);
+    return;
+  }
+  // Nom résolu de manière asynchrone (ne bloque jamais le flux)
+  const who = await resolveSenderName(remoteJid, sender, msg.pushName);
+  transcriptLog(`[${stamp}] ${who} : ${content}`);
+}
+
 async function handleMessage(msg) {
   const key = msg.key || {};
   const rawType = Object.keys(msg.message || {})[0] || '?';
@@ -309,14 +419,20 @@ async function handleMessage(msg) {
     + `participant=${key.participant || ''} type=${rawType} `
     + `corps="${(body || '').slice(0, 100).replace(/\n/g, ' ')}"`);
 
+  const remoteJid = key.remoteJid;
+  const sender = key.participant || remoteJid;
+
+  // Journal de conversations : enregistre TOUT message échangé (reçu ou
+  // envoyé), même ceux que le backend décidera d'ignorer. L'écriture est
+  // lancée sans attendre (fire-and-forget) pour ne pas ralentir le bot.
+  transcriptMessage(msg, key, body).catch(() => {});
+
   // Ignore nos propres messages et les statuts
   if (key.fromMe) return;
   if (key.remoteJid === 'status@broadcast') return;
 
   if (!body || !body.trim()) return;
 
-  const remoteJid = key.remoteJid;
-  const sender = key.participant || remoteJid;
   const isGroup = remoteJid.endsWith('@g.us');
 
   // Marque le message comme lu
@@ -373,6 +489,9 @@ async function sendChunks(remoteJid, text, quoted) {
 
   for (const part of parts) {
     await sock.sendMessage(remoteJid, { text: part }, { quoted });
+    if (TRANSCRIPT_ENABLED) {
+      transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${part}`);
+    }
   }
 }
 
@@ -393,6 +512,20 @@ function checkBotKey(req, res, next) {
 
 server.get('/health', (_req, res) => {
   res.json({ ok: true, status: currentStatus, number: sock?.user?.id || null });
+});
+
+// Téléchargement du journal de conversations (transcript.txt)
+server.get('/transcript', checkBotKey, (_req, res) => {
+  try {
+    if (!fs.existsSync(TRANSCRIPT_FILE)) {
+      return res.status(404).json({ error: 'Le transcript est vide ou désactivé.' });
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="transcript.txt"');
+    res.sendFile(TRANSCRIPT_FILE);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 server.post('/internal/restart', checkBotKey, (_req, res) => {
