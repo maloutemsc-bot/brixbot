@@ -98,6 +98,10 @@ HELP_TEXT = (
     "🎤 `.transcript` (réponse à un vocal) — transcrit la note vocale.\n"
     "📥 `.extract` (réponse à une image/vocal) — renvoie le média dans le chat.\n"
     "🔍 `.meta` (réponse à un message) — affiche ses métadonnées techniques.\n"
+    "📦 `.json` (réponse à un message) — affiche le message en JSON brut.\n"
+    "🆔 `.id` — affiche les identifiants de la conversation.\n"
+    "🗣 `.tts texte` — transforme un texte en note vocale.\n"
+    "📖 `.ocr` (réponse à une photo) — lit le texte de l'image.\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )

@@ -100,6 +100,13 @@ try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (_) { /* non bloquan
 // Durée maximale d'une vidéo YouTube téléchargeable (.yt) : 60 minutes
 const YT_MAX_SECONDS = 3600;
 
+// Cache des données de langue pour l'OCR (.ocr — tesseract.js).
+// Les données fra.traineddata sont téléchargées une seule fois puis réutilisées.
+const TESS_CACHE = path.join(__dirname, 'tessdata-cache');
+try { fs.mkdirSync(TESS_CACHE, { recursive: true }); } catch (_) { /* non bloquant */ }
+// Limite de longueur du texte synthétisé (.tts — contrainte Google TTS)
+const TTS_MAX_CHARS = 200;
+
 const logger = pino({ level: LOG_LEVEL });
 
 /* -------------------------------------------------------------------------- */
@@ -487,6 +494,42 @@ async function handleMessage(msg) {
     debugLog(`[meta] commande : ${trimmed}`);
     handleMetaCommand(msg, remoteJid).catch((err) => {
       debugLog(`[meta] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .json : message cité en JSON brut (mode débogage) ---
+  if (/^\.json\b/i.test(trimmed)) {
+    debugLog(`[json] commande : ${trimmed}`);
+    handleJsonCommand(msg, remoteJid).catch((err) => {
+      debugLog(`[json] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .id : identifiants de la conversation ---
+  if (/^\.id\b/i.test(trimmed)) {
+    debugLog(`[id] commande : ${trimmed}`);
+    handleIdCommand(msg, remoteJid, sender).catch((err) => {
+      debugLog(`[id] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .tts : synthèse vocale ---
+  if (/^\.(?:tts|voice)\b/i.test(trimmed)) {
+    debugLog(`[tts] commande : ${trimmed}`);
+    handleTtsCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[tts] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .ocr : lecture du texte d'une image ---
+  if (/^\.ocr\b/i.test(trimmed)) {
+    debugLog(`[ocr] commande : ${trimmed}`);
+    handleOcrCommand(msg, remoteJid).catch((err) => {
+      debugLog(`[ocr] erreur : ${err.message}`);
     });
     return;
   }
@@ -889,6 +932,263 @@ async function handleMetaCommand(msg, remoteJid) {
   await sendChunks(remoteJid, lines.join('\n'), msg);
   debugLog(`[meta] métadonnées affichées (${lines.length} lignes)`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔍 [métadonnées affichées]`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commandes .json / .id / .tts / .ocr                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Sérialise un message en JSON lisible (indenté 2 espaces) en interceptant les
+ * types spéciaux de Baileys/protobuf AVANT la sérialisation : BigInt, Long,
+ * Buffer, Uint8Array, NaN… (JSON.stringify appelle toJSON() sur les Buffers
+ * avant le replacer, d'où ce sérialiseur récursif maison).
+ */
+function jsonStringify(value) {
+  const seen = new WeakSet(); // protection anti-cycles
+
+  function ser(v, depth) {
+    const pad = (n) => '  '.repeat(n);
+    if (v === null) return 'null';
+    const t = typeof v;
+    if (t === 'string') return JSON.stringify(v);
+    if (t === 'number') return Number.isFinite(v) ? String(v) : `"${v}"`;
+    if (t === 'boolean') return String(v);
+    if (t === 'bigint') return `"${v}n"`;
+    if (t === 'undefined' || t === 'function' || t === 'symbol') return undefined;
+    if (t === 'object') {
+      if (seen.has(v)) return '"$cycle"';
+      if (Buffer.isBuffer(v)) return `"$buffer(${v.length} o): ${v.toString('base64').slice(0, 24)}…"`;
+      if (v instanceof Uint8Array) return `"$bytes(${v.length} o): ${Buffer.from(v).toString('base64').slice(0, 24)}…"`;
+      // Long protobuf (Baileys) : réduit à un nombre lisible
+      if (typeof v.toNumber === 'function' && typeof v.low === 'number' && typeof v.high === 'number') {
+        try { return String(v.toNumber()); } catch (_) { /* Long trop grand → chaîne */ }
+      }
+      if (Array.isArray(v)) {
+        if (v.length === 0) return '[]';
+        seen.add(v);
+        const items = [];
+        for (const item of v) {
+          const sv = ser(item, depth + 1);
+          if (sv !== undefined) items.push(sv);
+        }
+        seen.delete(v);
+        if (items.length === 0) return '[]';
+        return `[\n${items.map((i) => `${pad(depth + 1)}${i}`).join(',\n')}\n${pad(depth)}]`;
+      }
+      const keys = Object.keys(v);
+      if (keys.length === 0) return '{}';
+      seen.add(v);
+      const parts = [];
+      for (const k of keys) {
+        const sv = ser(v[k], depth + 1);
+        if (sv !== undefined) parts.push(`${pad(depth + 1)}${JSON.stringify(k)}: ${sv}`);
+      }
+      seen.delete(v);
+      if (parts.length === 0) return '{}';
+      return `{\n${parts.join(',\n')}\n${pad(depth)}}`;
+    }
+    return undefined;
+  }
+
+  return ser(value, 0);
+}
+
+/**
+ * .json — affiche le message CITÉ en JSON brut (mode débogage).
+ * Sans citation, affiche le message courant (le vôtre).
+ */
+async function handleJsonCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+
+  let target;
+  let header;
+  if (quoted) {
+    target = { message: quoted, contextInfo: ctx };
+    header = '📦 *JSON du message cité*';
+  } else {
+    target = msg;
+    header = '📦 *JSON de ce message*';
+  }
+
+  let json;
+  try {
+    json = jsonStringify(target);
+  } catch (err) {
+    debugLog(`[json] sérialisation impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de sérialiser ce message.', msg);
+  }
+  if (json.length > 40000) {
+    json = `${json.slice(0, 40000)}\n… (tronqué, trop long)`;
+  }
+  await sendChunks(remoteJid, `${header}\n\n${json}`, msg);
+  debugLog(`[json] affiché (${json.length} caractères)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📦 [JSON affiché]`);
+}
+
+/**
+ * .id — affiche les identifiants (jid) de la conversation et de l'expéditeur.
+ * Pratique pour remplir la whitelist / liste noire IA sans se tromper.
+ */
+async function handleIdCommand(msg, remoteJid, sender) {
+  const isGroup = remoteJid.endsWith('@g.us');
+  const lines = ['🆔 *Identifiants de cette conversation*', ''];
+  if (isGroup) {
+    lines.push(`👥 *Groupe* : ${remoteJid}`);
+    lines.push(`🧑 *Expéditeur* : ${sender || '?'}`);
+    lines.push('📁 Type : Groupe');
+    lines.push('');
+    lines.push('💡 Ajoutez l\'ID du groupe dans la whitelist IA (panneau → IA) pour activer l\'IA ici.');
+  } else if (remoteJid === 'status@broadcast') {
+    lines.push('📢 *Statut* (broadcast)');
+  } else {
+    lines.push(`💬 *Conversation* : ${remoteJid}`);
+    lines.push(`🧑 *Expéditeur* : ${sender || '?'}`);
+    lines.push('📁 Type : Message privé');
+    lines.push('');
+    lines.push('💡 Copiez cet identifiant dans la whitelist IA (panneau → IA).');
+  }
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🆔 [identifiants affichés]`);
+}
+
+/**
+ * .tts <texte> — synthèse vocale gratuite (Google TTS), renvoyée en note vocale.
+ * Limité à 200 caractères (contrainte du service).
+ */
+async function handleTtsCommand(msg, remoteJid, body) {
+  const text = body.replace(/^\.(?:tts|voice)\s*/i, '').trim();
+
+  if (!text) {
+    return replyError(remoteJid,
+      '🗣 *Commande .tts*\n'
+      + 'Utilisation : `.tts [texte]`\n'
+      + 'Exemple : `.tts Bonjour tout le monde !`', msg);
+  }
+  if (text.length > TTS_MAX_CHARS) {
+    return replyError(remoteJid, `❌ Texte trop long (${TTS_MAX_CHARS} caractères max).`, msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '🗣 Génération de la voix…' }).catch(() => {});
+
+  let audio;
+  try {
+    const { data } = await axios.get('https://translate.google.com/translate_tts', {
+      params: { ie: 'UTF-8', q: text, tl: 'fr', client: 'tw-ob' },
+      responseType: 'arraybuffer',
+      timeout: 30000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+    });
+    // Garde-fou : Google renvoie parfois une page HTML d'erreur au lieu d'un MP3
+    if (!data || data.length === 0 || data[0] === 0x3c /* '<' */) {
+      throw new Error('réponse non audio');
+    }
+    audio = data;
+  } catch (err) {
+    debugLog(`[tts] génération impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de générer la voix. Réessayez.', msg);
+  }
+
+  try {
+    await sock.sendMessage(remoteJid, {
+      audio,
+      mimetype: 'audio/mpeg',
+      ptt: true, // note vocale
+      fileName: 'tts.mp3',
+    }, { quoted: msg });
+    debugLog(`[tts] voix envoyée (${audio.length} octets)`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🗣 [voix] ${text.slice(0, 60)}`);
+  } catch (err) {
+    debugLog(`[tts] envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Envoi de la voix impossible.', msg);
+  }
+}
+
+/** Worker OCR partagé (tesseract.js, chargé paresseusement au premier .ocr). */
+let ocrWorkerPromise = null;
+let ocrQueue = Promise.resolve(); // sérialise les reconnaissances : tesseract.js refuse 2 jobs simultanés
+function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = (async () => {
+      const { createWorker } = require('tesseract.js');
+      return createWorker('fra', 1, { cachePath: TESS_CACHE });
+    })().catch((err) => {
+      ocrWorkerPromise = null; // retentera au prochain appel
+      throw err;
+    });
+  }
+  return ocrWorkerPromise;
+}
+
+/**
+ * .ocr — lit le texte d'une image (tesseract.js, français, gratuit, sans clé).
+ *
+ * Répondez à une photo avec `.ocr`, ou envoyez une photo avec la légende `.ocr`.
+ * Le premier appel télécharge les données de langue (puis c'est en cache).
+ */
+async function handleOcrCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+
+  // Image source : message courant (légende .ocr) ou image citée
+  let source = null;
+  if (current.imageMessage) {
+    source = msg;
+  } else if (quoted?.imageMessage) {
+    source = {
+      ...msg,
+      key: {
+        ...msg.key,
+        remoteJid,
+        id: ctx.stanzaId || msg.key.id,
+        participant: ctx.participant || msg.key.participant,
+      },
+      message: quoted,
+    };
+  }
+
+  if (!source) {
+    return replyError(remoteJid,
+      '📖 *Commande .ocr*\n'
+      + 'RÉPONDEZ à une photo avec `.ocr`\n'
+      + '— ou —\n'
+      + 'Envoyez une photo avec la légende `.ocr`.\n'
+      + 'Le bot lit le texte de l\'image (français).', msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '🔍 Lecture du texte… (quelques secondes)' }).catch(() => {});
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[ocr] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger l\'image. Réessayez.', msg);
+  }
+
+  let worker;
+  try {
+    worker = await getOcrWorker();
+    // Job sérialisé : deux .ocr simultanés ne s'entre-tuent pas (tesseract.js
+    // refuse deux reconnaissances en même temps sur le même worker).
+    const job = ocrQueue.then(() => worker.recognize(buffer));
+    ocrQueue = job.catch(() => {}); // un échec ne doit pas empoisonner la file
+    const { data } = await job;
+    const text = (data.text || '').trim();
+    if (!text) {
+      return replyError(remoteJid, '📖 Aucun texte détecté sur cette image.', msg);
+    }
+    await sendChunks(remoteJid, `📖 *Texte détecté (OCR)*\n\n${text}`, msg);
+    debugLog(`[ocr] ${text.length} caractères lus`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📖 [OCR] ${text.slice(0, 80)}`);
+  } catch (err) {
+    debugLog(`[ocr] erreur : ${err.message}`);
+    ocrWorkerPromise = null; // un worker défaillant est recréé au prochain appel
+    return replyError(remoteJid, '❌ Erreur OCR. Vérifiez que la photo est nette et réessayez.', msg);
+  }
 }
 
 /**
