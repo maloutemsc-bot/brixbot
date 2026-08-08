@@ -102,7 +102,9 @@ HELP_TEXT = (
     "🆔 `.id` — affiche les identifiants de la conversation.\n"
     "🗣 `.tts texte` — transforme un texte en note vocale.\n"
     "📖 `.ocr` (réponse à une photo) — lit le texte de l'image.\n"
-    "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall` · `.link` · `.close` · `.open`\n"
+    "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall` · `.link` · `.close` · `.open` · `.revoke`\n"
+    "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
+    "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )

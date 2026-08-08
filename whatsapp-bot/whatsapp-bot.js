@@ -122,6 +122,24 @@ function saveMuteStore() {
 }
 loadMuteStore();
 
+// État persistant des fonctionnalités (avertissements, bienvenue, anti-lien, AFK).
+const BOT_STORE = path.join(__dirname, 'bot-store.json');
+let botState = { warns: {}, welcome: {}, antilink: {}, afk: {} };
+function loadBotStore() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(BOT_STORE, 'utf8'));
+    botState = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_) { botState = {}; }
+  botState.warns = botState.warns || {};
+  botState.welcome = botState.welcome || {};
+  botState.antilink = botState.antilink || {};
+  botState.afk = botState.afk || {};
+}
+function saveBotStore() {
+  try { fs.writeFileSync(BOT_STORE, JSON.stringify(botState)); } catch (_) { /* non bloquant */ }
+}
+loadBotStore();
+
 const logger = pino({ level: LOG_LEVEL });
 
 /* -------------------------------------------------------------------------- */
@@ -371,6 +389,20 @@ async function startBot() {
       }
     });
 
+    // Accueil automatique des nouveaux membres (.welcome)
+    sock.ev.on('group-participants.update', async (update) => {
+      const { id: groupJid, participants, action } = update;
+      if (action !== 'add' || !participants || !participants.length) return;
+      const welcomeText = botState.welcome[jidLocal(groupJid)];
+      if (!welcomeText) return;
+      try {
+        await sock.sendMessage(groupJid, { text: welcomeText, mentions: participants });
+        debugLog(`[welcome] accueil envoyé (${participants.length} membre(s))`);
+      } catch (err) {
+        debugLog(`[welcome] envoi impossible : ${err.message}`);
+      }
+    });
+
     startPending = false; // le socket est prêt
     return sock;
   } catch (err) {
@@ -470,6 +502,19 @@ async function handleMessage(msg) {
 
   const trimmed = (body || '').trim();
 
+  // AFK : l'expéditeur était absent → il est de retour (statut effacé).
+  // Placé AVANT le garde-fou fromMe : même le propriétaire voit son AFK
+  // s'effacer en écrivant un message normal. La réponse du bot est fromMe
+  // sans commande → ignorée par le garde-fou, aucune boucle possible.
+  const senderLocal = jidLocal(sender);
+  if (botState.afk[senderLocal]) {
+    delete botState.afk[senderLocal];
+    saveBotStore();
+    if (sock) {
+      sock.sendMessage(remoteJid, { text: `👋 ${contactLabel(sender)} est de retour !` }, { quoted: msg }).catch(() => {});
+    }
+  }
+
   // Messages envoyés depuis le compte lié (fromMe) : on ne traite QUE les
   // commandes (qui commencent par ".") afin que l'utilisateur puisse utiliser
   // le bot depuis son propre WhatsApp. Les réponses du bot (texte normal)
@@ -490,8 +535,28 @@ async function handleMessage(msg) {
     return; // un membre muet ne déclenche rien d'autre
   }
 
+  // Anti-lien : les liens envoyés par les non-admins sont supprimés
+  if (isGroup && !key.fromMe && botState.antilink[jidLocal(remoteJid)]
+    && trimmed && /(https?:\/\/|www\.|chat\.whatsapp\.com|wa\.me\/)/i.test(trimmed)) {
+    if (!(await isGroupAdmin(remoteJid, sender))) {
+      debugLog(`[antilink] lien supprimé de ${contactLabel(sender)}`);
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          delete: { remoteJid, id: key.id, participant: key.participant },
+        }).catch((err) => debugLog(`[antilink] suppression impossible : ${err.message}`));
+        sock.sendMessage(remoteJid, { text: `🔗 Les liens sont interdits ici, ${contactLabel(sender)}.` }, { quoted: msg }).catch(() => {});
+      }
+      return;
+    }
+  }
+
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
+
+  // Signale si on mentionne / écrit à un membre absent (AFK)
+  maybeNotifyAfk(msg, remoteJid, sender, isGroup).catch((err) => {
+    debugLog(`[afk] erreur de notification : ${err.message}`);
+  });
 
   // --- Note vocale : transcription automatique (Whisper) puis réponse IA ---
   // (vérifiée AVANT le garde-fou "message sans texte" : un vocal n'a pas de
@@ -579,11 +644,20 @@ async function handleMessage(msg) {
     return;
   }
 
-  // --- Commandes d'administration de groupe (.kick / .mute / .link…) ---
-  if (/^\.(kick|mute|unmute|promote|demote|tagall|link|close|open)\b/i.test(trimmed)) {
+  // --- Commandes d'administration de groupe (.kick / .mute / .warn / .welcome…) ---
+  if (/^\.(kick|mute|unmute|promote|demote|tagall|link|close|open|warn|unwarn|warns|resetwarn|welcome|antilink|revoke)\b/i.test(trimmed)) {
     debugLog(`[admin] commande : ${trimmed}`);
     handleGroupAdminCommand(msg, remoteJid, sender, trimmed, isGroup).catch((err) => {
       debugLog(`[admin] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commandes utilitaires et fun (.roll / .bin / .quote / .ping / .afk) ---
+  if (/^\.(roll|bin|quote|ping|afk)\b/i.test(trimmed)) {
+    debugLog(`[fun] commande : ${trimmed}`);
+    handleFunCommand(msg, remoteJid, sender, trimmed).catch((err) => {
+      debugLog(`[fun] erreur : ${err.message}`);
     });
     return;
   }
@@ -1368,6 +1442,13 @@ async function handleGroupAdminCommand(msg, remoteJid, sender, body, isGroup) {
     case '.link': return handleGroupLink(msg, remoteJid);
     case '.close': return handleGroupSetting(msg, remoteJid, 'announcement');
     case '.open': return handleGroupSetting(msg, remoteJid, 'not_announcement');
+    case '.warn': return handleWarn(msg, remoteJid, body, 'warn');
+    case '.unwarn': return handleWarn(msg, remoteJid, body, 'unwarn');
+    case '.warns': return handleWarn(msg, remoteJid, body, 'warns');
+    case '.resetwarn': return handleWarn(msg, remoteJid, body, 'resetwarn');
+    case '.welcome': return handleWelcome(msg, remoteJid, body);
+    case '.antilink': return handleAntilink(msg, remoteJid, body);
+    case '.revoke': return handleGroupRevoke(msg, remoteJid);
     default: return replyError(remoteJid, 'ℹ️ Commande admin inconnue.', msg);
   }
 }
@@ -1541,6 +1622,372 @@ async function handleGroupSetting(msg, remoteJid, setting) {
   } catch (err) {
     debugLog(`[admin] réglage impossible : ${err.message}`);
     return replyError(remoteJid, '❌ Impossible. Vérifiez que le bot est administrateur.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Modération (.warn / .welcome / .antilink / .revoke)                       */
+/* -------------------------------------------------------------------------- */
+
+// Nombre d'avertissements avant expulsion automatique
+const WARN_LIMIT = 3;
+
+/**
+ * .warn / .unwarn / .warns / .resetwarn — système d'avertissements par groupe.
+ * À 3 avertissements, le membre est expulsé automatiquement (si le bot est admin).
+ */
+async function handleWarn(msg, remoteJid, body, action) {
+  const groupLocal = jidLocal(remoteJid);
+  const warns = (botState.warns[groupLocal] = botState.warns[groupLocal] || {});
+
+  if (action === 'warns') {
+    const entries = Object.entries(warns).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    if (!entries.length) return replyError(remoteJid, '⚠️ Aucun avertissement dans ce groupe. 👍', msg);
+    const lines = ['⚠️ *Avertissements dans ce groupe*'];
+    for (const [k, n] of entries) lines.push(`• ${contactLabel(k)} : ${n}/${WARN_LIMIT}`);
+    return sendChunks(remoteJid, lines.join('\n'), msg);
+  }
+
+  const arg = body.replace(new RegExp(`^\\.${action}\\s*`, 'i'), '').trim();
+  const target = await resolveTarget(msg, remoteJid, arg);
+  if (!target) {
+    return replyError(remoteJid,
+      `⚠️ *Commande .${action}*\nUtilisation : \`.${action} @membre\` (ou réponse à un message)`, msg);
+  }
+  const targetLocal = jidLocal(target);
+  if (targetLocal === jidLocal(sock?.user?.id)) {
+    return replyError(remoteJid, '😅 Je ne peux pas avertir le bot lui-même.', msg);
+  }
+  const who = contactLabel(target);
+
+  if (action === 'unwarn') {
+    if ((warns[targetLocal] || 0) === 0) {
+      return replyError(remoteJid, `ℹ️ *${who}* n'avait aucun avertissement.`, msg);
+    }
+    warns[targetLocal] = Math.max(0, (warns[targetLocal] || 0) - 1);
+    saveBotStore();
+    return replyError(remoteJid, `✅ *${who}* : avertissement retiré (${warns[targetLocal]}/${WARN_LIMIT}).`, msg);
+  }
+  if (action === 'resetwarn') {
+    warns[targetLocal] = 0;
+    saveBotStore();
+    return replyError(remoteJid, `🧹 Avertissements de *${who}* remis à zéro.`, msg);
+  }
+
+  // .warn : on ajoute un avertissement
+  warns[targetLocal] = (warns[targetLocal] || 0) + 1;
+  const count = warns[targetLocal];
+  saveBotStore();
+
+  if (count >= WARN_LIMIT) {
+    try {
+      await sock.groupParticipantsUpdate(remoteJid, [target], 'remove');
+      delete warns[targetLocal]; // on ne remet à zéro qu'APRÈS une expulsion réussie
+      saveBotStore();
+      await sock.sendMessage(remoteJid,
+        { text: `👢 *${who}* expulsé après ${WARN_LIMIT} avertissements.` }, { quoted: msg });
+      debugLog(`[warn] kick auto : ${who}`);
+      transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👢 [warn x${WARN_LIMIT}] ${who}`);
+    } catch (err) {
+      debugLog(`[warn] kick auto impossible : ${err.message}`);
+      // Le compte reste à WARN_LIMIT : un prochain .warn retentera le kick.
+      saveBotStore();
+      return replyError(remoteJid,
+        `⚠️ *${who}* a atteint ${WARN_LIMIT} avertissements, mais le bot doit être admin pour l'expulser.`, msg);
+    }
+    return;
+  }
+
+  const remaining = WARN_LIMIT - count;
+  try {
+    await sock.sendMessage(remoteJid, {
+      text: `⚠️ *${who}* : avertissement ${count}/${WARN_LIMIT}.`
+        + (remaining === 1 ? ' Encore un et c\'est l\'expulsion !' : ` Encore ${remaining} avant expulsion.`),
+    }, { quoted: msg });
+  } catch (err) { debugLog(`[warn] confirmation impossible : ${err.message}`); }
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ⚠️ [warn ${count}/3] ${who}`);
+}
+
+/** .welcome — message de bienvenue automatique pour ce groupe. */
+async function handleWelcome(msg, remoteJid, body) {
+  const groupLocal = jidLocal(remoteJid);
+  const arg = body.replace(/^\.welcome\s*/i, '').trim();
+
+  if (!arg) {
+    const current = botState.welcome[groupLocal];
+    const lines = ['👋 *Commande .welcome*', ''];
+    lines.push(current ? `📣 Message actuel : "${current}"` : 'Aucun message de bienvenue configuré ici.');
+    lines.push('', '• `.welcome <message>` — définir le message', '• `.welcome off` — désactiver l\'accueil');
+    return sendChunks(remoteJid, lines.join('\n'), msg);
+  }
+  if (/^(off|non|stop|0|supprime)$/i.test(arg)) {
+    delete botState.welcome[groupLocal];
+    saveBotStore();
+    return replyError(remoteJid, '🚫 Message de bienvenue désactivé pour ce groupe.', msg);
+  }
+  if (arg.length > 300) return replyError(remoteJid, '❌ Message trop long (300 caractères max).', msg);
+  botState.welcome[groupLocal] = arg;
+  saveBotStore();
+  return replyError(remoteJid,
+    `👋 Message de bienvenue défini :\n"${arg}"\n\n_Il sera envoyé quand quelqu'un rejoint._`, msg);
+}
+
+/** .antilink — supprime automatiquement les liens des non-admins. */
+async function handleAntilink(msg, remoteJid, body) {
+  const groupLocal = jidLocal(remoteJid);
+  const arg = body.replace(/^\.antilink\s*/i, '').trim().toLowerCase();
+  const active = !!botState.antilink[groupLocal];
+  if (['oui', 'on', '1', 'activer'].includes(arg)) {
+    botState.antilink[groupLocal] = true;
+    saveBotStore();
+    return replyError(remoteJid, '🔗 *Anti-lien activé* : les liens des non-admins seront supprimés.', msg);
+  }
+  if (['non', 'off', '0', 'desactiver'].includes(arg)) {
+    delete botState.antilink[groupLocal];
+    saveBotStore();
+    return replyError(remoteJid, '🔗 *Anti-lien désactivé*.', msg);
+  }
+  return replyError(remoteJid,
+    `🔗 *Anti-lien* : ${active ? 'ACTIF ✅' : 'inactif ❌'}\n\n`
+    + '• `.antilink oui` — supprimer les liens des non-admins\n'
+    + '• `.antilink non` — désactiver', msg);
+}
+
+/** .revoke — révoque le lien d'invitation actuel et en génère un nouveau. */
+async function handleGroupRevoke(msg, remoteJid) {
+  try {
+    const code = await sock.groupRevokeInvite(remoteJid);
+    if (!code) throw new Error('aucun code');
+    const url = `https://chat.whatsapp.com/${code}`;
+    await sock.sendMessage(remoteJid, {
+      text: `🔄 Lien d'invitation révoqué.\n🔗 Nouveau lien : ${url}`,
+    }, { quoted: msg });
+    debugLog(`[admin] lien révoqué`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔄 [lien révoqué]`);
+  } catch (err) {
+    debugLog(`[admin] revoke impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de révoquer le lien. Vérifiez que le bot est administrateur.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Fun et utilitaires (.roll / .bin / .quote / .ping / .afk)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Analyse une demande de lancer de dés (fonction pure, testable).
+ * Retourne { kind: 'd100' } | { kind: 'range', max } | { kind: 'dice', dice, sides }
+ * | { kind: 'invalid', message } | { kind: 'help' }.
+ */
+function parseRoll(arg) {
+  const input = (arg || '').trim().toLowerCase();
+  if (!input) return { kind: 'd100' };
+  if (/^\d+$/.test(input)) {
+    const n = parseInt(input, 10);
+    if (n < 1) return { kind: 'invalid', message: 'Le nombre doit être ≥ 1.' };
+    return { kind: 'range', max: Math.min(n, 1000000) };
+  }
+  const m = input.match(/^(\d{1,2})d(\d{1,4})$/);
+  if (m) {
+    return {
+      kind: 'dice',
+      dice: Math.min(parseInt(m[1], 10) || 1, 100),
+      sides: Math.min(parseInt(m[2], 10) || 1, 1000000),
+    };
+  }
+  return { kind: 'help' };
+}
+
+/** .roll — lance un dé ou un nombre aléatoire. */
+async function handleRoll(msg, remoteJid, body) {
+  const arg = body.replace(/^\.roll\s*/i, '').trim();
+  const spec = parseRoll(arg);
+  const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+  let lines;
+
+  if (spec.kind === 'd100') {
+    lines = ['🎲 Un dé à 100 faces…', `🎯 Résultat : *${rand(1, 100)}*`];
+  } else if (spec.kind === 'range') {
+    lines = [`🎲 Lancement de 1 à ${spec.max}…`, `🎯 Résultat : *${rand(1, spec.max)}*`];
+  } else if (spec.kind === 'dice') {
+    const rolls = [];
+    let total = 0;
+    for (let i = 0; i < spec.dice; i++) {
+      const r = rand(1, spec.sides);
+      rolls.push(r);
+      total += r;
+    }
+    lines = spec.dice === 1
+      ? ['🎲 Un dé à ' + spec.sides + ' faces…', `🎯 Résultat : *${total}*`]
+      : [`🎲 ${spec.dice} dés à ${spec.sides} faces…`, `🎯 Total : *${total}*`, `📊 Détail : ${rolls.join(' + ')}`];
+  } else if (spec.kind === 'invalid') {
+    return replyError(remoteJid, `❌ ${spec.message}`, msg);
+  } else {
+    return replyError(remoteJid,
+      '🎲 *Commande .roll*\n'
+      + '• `.roll` — dé à 100\n'
+      + '• `.roll 50` — nombre entre 1 et 50\n'
+      + '• `.roll 2d6` — dés (style D&D)', msg);
+  }
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎲 [dé lancé]`);
+}
+
+/**
+ * Convertit texte ↔ binaire (fonction pure, testable).
+ * Retourne { kind: 'encode', bin } | { kind: 'decode', text } | { error }.
+ */
+function binConvert(arg) {
+  const input = (arg || '').trim();
+  if (!input) return { error: 'help' };
+  const isSpaced = /^[01\s]+$/.test(input) && /\s/.test(input);
+  const isBits = /^[01]+$/.test(input);
+  try {
+    if (isBits || isSpaced) {
+      let bytes;
+      if (isSpaced) {
+        bytes = input.split(/\s+/).filter(Boolean).map((b) => {
+          if (b.length > 8) throw new Error('morceau de plus de 8 bits');
+          return parseInt(b, 2);
+        });
+      } else {
+        if (input.length % 8 !== 0) throw new Error('longueur non multiple de 8');
+        bytes = input.match(/.{8}/g).map((b) => parseInt(b, 2));
+      }
+      if (bytes.length > 2000) throw new Error('trop de bits');
+      return { kind: 'decode', text: Buffer.from(bytes).toString('utf8') };
+    }
+    if (input.length > 200) throw new Error('texte trop long (200 caractères max)');
+    const bin = [...Buffer.from(input, 'utf8')]
+      .map((b) => b.toString(2).padStart(8, '0')).join(' ');
+    return { kind: 'encode', bin };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/** .bin — texte ↔ binaire. */
+async function handleBin(msg, remoteJid, body) {
+  const arg = body.replace(/^\.bin\s*/i, '').trim();
+  const res = binConvert(arg);
+  if (res.error) {
+    if (res.error === 'help') {
+      return replyError(remoteJid,
+        '💻 *Commande .bin*\n'
+        + '• `.bin texte` — code le texte en binaire\n'
+        + '• `.bin 01101000 01101001` — décode en texte', msg);
+    }
+    return replyError(remoteJid, `❌ Conversion impossible (${res.error}).`, msg);
+  }
+  if (res.kind === 'decode') {
+    return sendChunks(remoteJid, `💻 *Binaire → texte*\n\n${res.text}`, msg);
+  }
+  return sendChunks(remoteJid, `💻 *Texte → binaire*\n\n${res.bin}`, msg);
+}
+
+/** .quote — cite joliment le message auquel on répond. */
+async function handleQuote(msg, remoteJid, sender) {
+  const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+  if (!quoted) {
+    return replyError(remoteJid,
+      '📌 *Commande .quote*\nRÉPONDEZ à un message avec `.quote` pour le citer en beauté.', msg);
+  }
+  const text = quoted.conversation || quoted.extendedTextMessage?.text
+    || quoted.imageMessage?.caption || quoted.videoMessage?.caption || '';
+  if (!text.trim()) {
+    return replyError(remoteJid, '❌ Le message cité n\'a pas de texte.', msg);
+  }
+  const who = contactLabel(ctx.participant || ctx.remoteJid || sender);
+  await sendChunks(remoteJid, `📌 *Citation*\n\n« ${text.trim()} »\n— ${who}`, msg);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📌 [citation] ${text.trim().slice(0, 60)}`);
+}
+
+/** .ping — mesure la latence bot ↔ backend. */
+async function handlePing(msg, remoteJid) {
+  const t0 = Date.now();
+  try {
+    await axios.get(`${FLASK_URL}/health`, { timeout: 5000 });
+    const ms = Date.now() - t0;
+    return replyError(remoteJid, `🏓 *Pong !* Latence bot ↔ backend : *${ms} ms*`, msg);
+  } catch (err) {
+    debugLog(`[ping] backend injoignable : ${err.message}`);
+    return replyError(remoteJid, '❌ Backend injoignable.', msg);
+  }
+}
+
+/** Formate une durée écoulée en "12 min" ou "2h05". */
+function elapsedLabel(ms) {
+  const min = Math.max(0, Math.floor(ms / 60000));
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+}
+
+// Anti-spam des notifications AFK : une seule par conversation/membre/30 min
+const AFK_NOTIFY_COOLDOWN = 30 * 60 * 1000;
+const afkNotified = {}; // "groupe|membre" → timestamp
+
+/**
+ * Signale à l'expéditeur qu'il écrit à / mentionne un membre absent (AFK).
+ * Une seule notification par conversation et par membre (cooldown 30 min).
+ */
+async function maybeNotifyAfk(msg, remoteJid, sender, isGroup) {
+  if (!sock) return;
+  const key = msg.key || {};
+  if (key.fromMe) return;
+  const entries = [];
+  if (isGroup) {
+    const mentioned = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    for (const m of mentioned) {
+      const local = jidLocal(m);
+      if (local && botState.afk[local]) entries.push(local);
+    }
+  } else {
+    const local = jidLocal(remoteJid);
+    if (local && botState.afk[local]) entries.push(local);
+  }
+  const senderLocal = jidLocal(sender);
+  for (const local of entries) {
+    if (local === senderLocal) continue;
+    const notifyKey = `${jidLocal(remoteJid)}|${local}`;
+    const last = afkNotified[notifyKey] || 0;
+    if (Date.now() - last < AFK_NOTIFY_COOLDOWN) continue;
+    afkNotified[notifyKey] = Date.now();
+    const info = botState.afk[local] || {};
+    const lines = [`💤 *${contactLabel(local)}* est absent depuis *${elapsedLabel(Date.now() - (info.since || Date.now()))}*.`];
+    if (info.reason) lines.push(`📝 Raison : ${info.reason}`);
+    lines.push('_Il/elle répondra dès son retour._');
+    await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg }).catch(() => {});
+  }
+}
+
+/** .afk [raison] / .afk off — statut absent. */
+async function handleAfk(msg, remoteJid, sender, body) {
+  const local = jidLocal(sender);
+  const arg = body.replace(/^\.afk\s*/i, '').trim();
+  if (/^(off|non|stop|retour|0)$/i.test(arg)) {
+    if (!botState.afk[local]) return replyError(remoteJid, 'ℹ️ Tu n\'étais pas marqué absent.', msg);
+    delete botState.afk[local];
+    saveBotStore();
+    return replyError(remoteJid, `👋 Bienvenue de retour, ${contactLabel(sender)} !`, msg);
+  }
+  botState.afk[local] = { reason: arg, since: Date.now() };
+  saveBotStore();
+  const extra = arg ? `\n📝 Raison : ${arg}` : '';
+  return replyError(remoteJid,
+    `💤 ${contactLabel(sender)} est marqué absent.${extra}\n_Quand on t'écrit ou te mentionne, ils le sauront._`, msg);
+}
+
+/** Point d'entrée des commandes fun (aucune restriction). */
+async function handleFunCommand(msg, remoteJid, sender, body) {
+  const cmd = body.split(/\s+/)[0].toLowerCase();
+  switch (cmd) {
+    case '.roll': return handleRoll(msg, remoteJid, body);
+    case '.bin': return handleBin(msg, remoteJid, body);
+    case '.quote': return handleQuote(msg, remoteJid, sender);
+    case '.ping': return handlePing(msg, remoteJid);
+    case '.afk': return handleAfk(msg, remoteJid, sender, body);
+    default: return replyError(remoteJid, 'ℹ️ Commande inconnue.', msg);
   }
 }
 
