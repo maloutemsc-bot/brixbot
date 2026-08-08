@@ -173,11 +173,12 @@ def api_logout():
 def _compute_stats():
     total = CommandLog.query.count()
     success = CommandLog.query.filter_by(status="success").count()
+    errors = CommandLog.query.filter_by(status="error").count()
     avg_time = db.session.query(db.func.avg(CommandLog.response_time)).scalar() or 0.0
     return {
         "total": total,
         "success": success,
-        "errors": total - success,
+        "errors": errors,
         "avg_response_time": round(float(avg_time), 3),
         "ai_count": CommandLog.query.filter_by(is_ai=True).count(),
     }

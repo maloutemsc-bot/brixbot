@@ -43,6 +43,13 @@ DEFAULT_RESPONSE = (
     "Exemple : `.search Dupont Jean Paris`"
 )
 
+# Aide affichée quand `.ia` est utilisé alors qu'aucun propriétaire n'est défini
+OWNER_HINT = (
+    "🔒 Les commandes `.ia` sont réservées au propriétaire du bot.\n"
+    "Ajoutez votre numéro dans `backend/.env` (ex: `OWNER_NUMBER=33612345678`)\n"
+    "puis relancez le backend (arreter-bot.bat puis demarrer-bot.bat)."
+)
+
 
 # --------------------------------------------------------------------------- #
 #  Utilitaires
@@ -194,7 +201,11 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
         return _handle_tel(body, remote_jid)
 
     # 2) Commande de contrôle .ia (réservée au propriétaire)
-    if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE) and _is_owner(sender):
+    if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
+        if not os.environ.get("OWNER_NUMBER", "").strip():
+            return {"reply": OWNER_HINT}  # aide à la configuration
+        if not _is_owner(sender):
+            return {"ignore": True}  # non-propriétaire : on ignore poliment
         return _handle_ia(body, sender, remote_jid)
 
     # 3) IA automatique (si activée et conversation autorisée)
@@ -202,12 +213,18 @@ def handle_message(body, sender="", remote_jid="", is_group=False):
     if ai_cfg.enabled and _chat_allowed(ai_cfg.ai_whitelist, sender, remote_jid, is_group):
         return _handle_ai(body, sender, remote_jid, is_group)
 
-    # 4) Réponse par défaut
+    # 4) Réponse par défaut (message ignoré par l'IA mais réponse auto active)
     bot_cfg = BotConfig.get()
     if bot_cfg.auto_response:
         return {"reply": DEFAULT_RESPONSE}
 
-    # 5) Ignorer
+    # 5) Ignorer — si l'IA est active mais que la conversation n'est pas
+    #    autorisée par la whitelist, on journalise pour que le refus soit
+    #    visible dans le panneau (onglet Logs).
+    if ai_cfg.enabled:
+        _log_command("IA", body[:500], 0, "ignored",
+                     "Conversation non autorisée (whitelist IA)", 0.0,
+                     is_ai=True, chat=remote_jid)
     return {"ignore": True}
 
 

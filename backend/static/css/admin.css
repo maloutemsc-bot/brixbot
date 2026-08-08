@@ -468,6 +468,7 @@ input[type="range"] {
 .badge.error   { color: #f87171; background: rgba(231, 76, 60, 0.14); }
 .badge.cmd     { color: #93c5fd; background: rgba(96, 165, 250, 0.14); }
 .badge.ai      { color: #c4b5fd; background: rgba(167, 139, 250, 0.14); }
+.badge.ignored { color: #a3a3bd; background: rgba(141, 141, 170, 0.14); }
 
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
 
