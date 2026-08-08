@@ -1075,6 +1075,18 @@ async function handleIdCommand(msg, remoteJid, sender) {
     lines.push(`👥 *Groupe* : ${remoteJid}`);
     lines.push(`🧑 *Expéditeur* : ${sender || '?'}`);
     lines.push('📁 Type : Groupe');
+    // Diagnostic admin : rôle de l'expéditeur et du bot (utile si une
+    // commande admin est refusée à tort).
+    if (sock) {
+      try {
+        const meta = await sock.groupMetadata(remoteJid);
+        const addressing = meta.addressingMode === 'lid'
+          ? 'LID (identifiant numérique)' : 'PN (numéro de téléphone)';
+        lines.push(`🔑 Adressage : ${addressing}`);
+        lines.push(`👑 Ton rôle ici : ${roleLabel(getParticipantRole(meta, sender))}`);
+        lines.push(`🤖 Rôle du bot : ${roleLabel(getParticipantRole(meta, sock.user?.id))}`);
+      } catch (_) { /* métadonnées indisponibles */ }
+    }
     lines.push('');
     lines.push('💡 Ajoutez l\'ID du groupe dans la whitelist IA (panneau → IA) pour activer l\'IA ici.');
   } else if (remoteJid === 'status@broadcast') {
@@ -1236,19 +1248,64 @@ function jidLocal(jid) {
   return String(jid || '').split('@')[0].split(':')[0];
 }
 
+/**
+ * Toutes les identifications locales d'un participant de groupe.
+ * WhatsApp migre vers l'adressage LID : `id` peut être un identifiant
+ * numérique (@lid) et le vrai numéro est alors dans `phoneNumber` (et
+ * inversement, `lid` porte le LID quand `id` est un numéro).
+ */
+function participantKeys(p) {
+  const keys = new Set();
+  for (const v of [p && p.id, p && p.lid, p && p.phoneNumber]) {
+    const local = jidLocal(v);
+    if (local) keys.add(local);
+  }
+  return keys;
+}
+
+/**
+ * Rôle d'un jid dans les métadonnées d'un groupe :
+ * 'superadmin' | 'admin' | 'member' | null (non membre).
+ */
+function getParticipantRole(meta, jid) {
+  const local = jidLocal(jid);
+  const member = (meta.participants || []).find((p) => participantKeys(p).has(local));
+  if (!member) return null;
+  if (member.admin) return member.admin; // 'admin' | 'superadmin'
+  if (member.isSuperAdmin) return 'superadmin';
+  if (member.isAdmin) return 'admin';
+  return 'member';
+}
+
+/** Libellé lisible d'un rôle (pour .id). */
+function roleLabel(role) {
+  if (role === 'superadmin') return 'Créateur ✅';
+  if (role === 'admin') return 'Administrateur ✅';
+  if (role === 'member') return 'Membre';
+  return 'Non membre';
+}
+
 /** Vrai si un participant est muet dans ce groupe (normalisé sans suffixe d'appareil). */
 function isMuted(chat, participant) {
   return !!(mutedMap[chat] && mutedMap[chat][jidLocal(participant)]);
 }
 
-/** Vrai si l'expéditeur est administrateur du groupe. */
+/**
+ * Vrai si l'expéditeur est administrateur du groupe.
+ * Le créateur du groupe est TOUJOURS considéré admin (même si le type
+ * n'est pas explicite), et la comparaison couvre id / lid / phoneNumber.
+ */
 async function isGroupAdmin(remoteJid, senderJid) {
   if (!sock) return false;
   try {
     const meta = await sock.groupMetadata(remoteJid);
-    const local = jidLocal(senderJid);
-    const member = (meta.participants || []).find((p) => jidLocal(p.id) === local);
-    return !!(member && member.admin);
+    const senderLocal = jidLocal(senderJid);
+    // Le créateur (id, pn ou username) est toujours administrateur
+    for (const v of [meta.owner, meta.ownerPn, meta.ownerUsername]) {
+      if (jidLocal(v) === senderLocal) return true;
+    }
+    const role = getParticipantRole(meta, senderJid);
+    return role === 'admin' || role === 'superadmin';
   } catch (_) {
     return false;
   }
@@ -1259,9 +1316,8 @@ async function isBotAdmin(remoteJid) {
   if (!sock) return false;
   try {
     const meta = await sock.groupMetadata(remoteJid);
-    const local = jidLocal(sock.user?.id);
-    const member = (meta.participants || []).find((p) => jidLocal(p.id) === local);
-    return !!(member && member.admin);
+    const role = getParticipantRole(meta, sock.user?.id);
+    return role === 'admin' || role === 'superadmin';
   } catch (_) {
     return false;
   }
@@ -1281,9 +1337,10 @@ async function resolveTarget(msg, remoteJid, arg) {
     const key = (digits.length === 10 && digits.startsWith('0')) ? `33${digits.slice(1)}` : digits;
     try {
       const meta = await sock.groupMetadata(remoteJid);
-      const match = (meta.participants || []).find(
-        (p) => jidLocal(p.id) === key || jidLocal(p.id).endsWith(key)
-      );
+      const match = (meta.participants || []).find((p) => {
+        const keys = [...participantKeys(p)];
+        return keys.includes(key) || keys.some((k) => k.length >= 8 && k.endsWith(key));
+      });
       if (match) return match.id;
     } catch (_) { /* groupe inaccessible */ }
   }
