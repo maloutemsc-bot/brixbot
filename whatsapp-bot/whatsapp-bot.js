@@ -700,6 +700,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .pin : recherche d'images (DuckDuckGo Images + Wikimedia) ---
+  if (/^\.pin\b/i.test(trimmed)) {
+    debugLog(`[pin] commande : ${trimmed}`);
+    handlePinCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[pin] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande secrète : simulation (à découvrir !) ---
   if (/^\.hack\b/i.test(trimmed)) {
     debugLog(`[secrete] commande : ${trimmed}`);
@@ -1580,6 +1589,195 @@ async function handleCorrectCommand(msg, remoteJid, body) {
   await sendChunks(remoteJid, lines.join('\n'), msg);
   debugLog(`[correct] ${text.length} caractères corrigés → ${data.corrected.length} caractères`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✏️ [correction] ${data.corrected.slice(0, 60)}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .pin — recherche d'images (DuckDuckGo Images + Wikimedia)         */
+/* -------------------------------------------------------------------------- */
+
+// Nombre d'images par défaut envoyées par .pin (et maximum autorisé)
+const PIN_DEFAULT_COUNT = 5;
+const PIN_MAX_COUNT = 10;
+// Taille maximale d'une image téléchargée (garde-fou, 15 Mo — largement assez)
+const PIN_MAX_BYTES = 15 * 1024 * 1024;
+// User-Agent commun pour les services d'images (évite les blocages)
+const PIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
+
+/**
+ * Recherche des URLs d'images sur DuckDuckGo Images (gratuit, sans clé API).
+ * Le token vqd est récupéré depuis la page de recherche, puis les résultats
+ * JSON sont interrogés. Renvoie des URLs https (ou une liste vide).
+ */
+async function searchDdgImages(query, limit) {
+  const page = await axios.get('https://duckduckgo.com/', {
+    params: { q: query, ia: 'web' },
+    headers: { 'User-Agent': PIN_UA },
+    timeout: 20000,
+  });
+  const vqd = String(page.data || '').match(/vqd="([^"]+)"/)?.[1];
+  if (!vqd) return [];
+  const res = await axios.get('https://duckduckgo.com/i.js', {
+    params: { l: 'us-en', o: 'json', q: query, vqd },
+    headers: { 'User-Agent': PIN_UA, Referer: 'https://duckduckgo.com/?q=' + encodeURIComponent(query) },
+    timeout: 25000,
+  });
+  const urls = [];
+  for (const item of (res.data?.results || [])) {
+    if (!item || !item.image) continue;
+    const raw = String(item.image);
+    // Certains sites ne sont servis qu'en http : on force https pour WhatsApp
+    const url = raw.startsWith('http://') ? 'https://' + raw.slice(7) : raw;
+    if (url.startsWith('https://') && urls.indexOf(url) === -1) urls.push(url);
+    if (urls.length >= limit) break;
+  }
+  return urls;
+}
+
+/**
+ * Recherche des images sur Wikimedia Commons (API officielle, sans clé).
+ * Renvoie des miniatures 800 px (bien dimensionnées pour WhatsApp).
+ */
+async function searchWikiImages(query, limit) {
+  const res = await axios.get('https://commons.wikimedia.org/w/api.php', {
+    params: {
+      action: 'query', format: 'json', generator: 'search',
+      gsrsearch: query, gsrnamespace: 6, gsrlimit: limit * 2,
+      prop: 'imageinfo', iiprop: 'url|size', iiurlwidth: 800,
+    },
+    headers: { 'User-Agent': 'BrixBot/1.0 (bot WhatsApp)' },
+    timeout: 25000,
+  });
+  const urls = [];
+  for (const page of Object.values(res.data?.query?.pages || {})) {
+    const info = page.imageinfo && page.imageinfo[0];
+    const url = (info && (info.thumburl || info.url)) || '';
+    if (url.startsWith('https://') && urls.indexOf(url) === -1) urls.push(url);
+    if (urls.length >= limit) break;
+  }
+  return urls;
+}
+
+/**
+ * .pin <requête> — envoie des images correspondant à la recherche.
+ *
+ * Usage :
+ *   .pin chat          → 5 images de chats
+ *   .pin 3 chat mignon → 3 images (nombre optionnel, 1 à 10)
+ * Source : DuckDuckGo Images (varié), secours Wikimedia Commons (fiable).
+ * 100 % gratuit, sans clé API.
+ */
+async function handlePinCommand(msg, remoteJid, body) {
+  let rest = body.replace(/^\.pin\s*/i, '').trim();
+  let count = PIN_DEFAULT_COUNT;
+  let query = rest;
+
+  // Nombre optionnel au début : ".pin 3 chat" → 3 images de "chat"
+  const firstWord = rest.split(' ')[0] || '';
+  const parsedCount = parseInt(firstWord, 10);
+  if (String(parsedCount) === firstWord && parsedCount > 0) {
+    count = Math.min(parsedCount, PIN_MAX_COUNT);
+    query = rest.slice(firstWord.length).trim();
+  }
+
+  if (!query) {
+    return replyError(remoteJid,
+      '📌 *Commande .pin*\n'
+      + 'Envoie des images correspondant à une recherche (gratuit, sans clé).\n\n'
+      + 'Utilisation :\n'
+      + '• `.pin chat` — 5 images de chats\n'
+      + '• `.pin 3 chat mignon` — 3 images (nombre optionnel, 1 à 10)\n\n'
+      + 'Sources : DuckDuckGo Images · Wikimedia Commons.', msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: `📌 Recherche d'images pour « ${query} »…` }).catch(() => {});
+
+  // 1) Recherche des URLs : DuckDuckGo d'abord, Wikimedia en secours.
+  // On demande PLUS d'URLs que le nombre voulu : certains liens sont morts ou
+  // renvoient du HTML, la boucle d'envoi en ignorera et on doit en avoir assez
+  // pour atteindre `count` images effectives.
+  const fetchCount = Math.min(count * 3, 30);
+  let wikiTried = false; // Wikimedia est tenté au plus une fois (secours ou complément)
+  let urls = [];
+  try {
+    urls = await searchDdgImages(query, fetchCount);
+  } catch (err) {
+    debugLog(`[pin] DuckDuckGo indisponible : ${err.message}`);
+  }
+  if (!urls.length) {
+    // Secours direct : DuckDuckGo n'a rien renvoyé
+    try {
+      urls = await searchWikiImages(query, fetchCount);
+      wikiTried = true;
+      if (urls.length) debugLog(`[pin] secours Wikimedia utilisé (${urls.length} URL(s))`);
+    } catch (err) {
+      debugLog(`[pin] Wikimedia indisponible : ${err.message}`);
+    }
+  }
+  if (!urls.length) {
+    return replyError(remoteJid, `❌ Aucune image trouvée pour « ${query} ». Réessayez.`, msg);
+  }
+
+  // 2) Téléchargement puis envoi, image par image (les liens morts sont ignorés).
+  // Chaque URL est tentée en séquentiel ; une URL qui échoue (téléchargement ou
+  // envoi) est simplement sautée. Timeout court (15 s) pour ne jamais bloquer
+  // la commande sur un lien qui pend.
+  let sent = 0;
+  const sendOne = async (url) => {
+    let buffer;
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        maxContentLength: PIN_MAX_BYTES,
+        headers: { 'User-Agent': PIN_UA },
+      });
+      // Garde-fou : certains liens renvoient une page HTML au lieu d'une image
+      const ctype = String(res.headers['content-type'] || '');
+      if (!res.data || !res.data.length || ctype.indexOf('image/') !== 0) {
+        debugLog(`[pin] lien non-image ignoré : ${url}`);
+        return;
+      }
+      buffer = res.data;
+    } catch (err) {
+      debugLog(`[pin] téléchargement impossible (${url}) : ${err.message}`);
+      return;
+    }
+    try {
+      await sock.sendMessage(remoteJid, {
+        image: buffer,
+        caption: `📌 *${query}* (${sent + 1}/${count})`,
+      }, { quoted: msg });
+      sent++;
+    } catch (err) {
+      debugLog(`[pin] envoi impossible (${url}) : ${err.message}`);
+    }
+  };
+
+  // Passe 1 : les URLs DuckDuckGo
+  for (let i = 0; i < urls.length && sent < count; i++) {
+    await sendOne(urls[i]);
+  }
+  // Passe 2 : complément Wikimedia si DuckDuckGo n'a pas fourni assez d'images
+  // (ex: tous ses liens étaient morts) — on ne re-tente jamais Wikimedia deux fois.
+  if (sent < count && !wikiTried) {
+    wikiTried = true;
+    try {
+      const wikiUrls = await searchWikiImages(query, fetchCount);
+      if (wikiUrls.length) debugLog(`[pin] complément Wikimedia (${wikiUrls.length} URL(s))`);
+      for (const url of wikiUrls) {
+        if (sent >= count) break;
+        await sendOne(url);
+      }
+    } catch (err) {
+      debugLog(`[pin] Wikimedia indisponible : ${err.message}`);
+    }
+  }
+
+  if (!sent) {
+    return replyError(remoteJid, "❌ Aucune image n'a pu être envoyée. Réessayez.", msg);
+  }
+  debugLog(`[pin] ${sent} image(s) envoyée(s) pour « ${query} »`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📌 ${sent} image(s) pour « ${query} »`);
 }
 
 /* -------------------------------------------------------------------------- */

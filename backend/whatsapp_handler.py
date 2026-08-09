@@ -104,6 +104,7 @@ HELP_TEXT = (
     "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"
     "    ✏️ `.correct` (réponse à un message ou `.correct texte`) — corrige l'orthographe et la grammaire (IA)\n"
     "📖 `.ocr` (réponse à une photo) — lit le texte de l'image.\n"
+    "    📌 .pin chat — envoie des images pour un mot-clé (gratuit, sans clé).\n"
     "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall` · `.link` · `.close` · `.open` · `.revoke`\n"
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
