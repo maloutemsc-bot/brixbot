@@ -374,6 +374,37 @@ def transcribe_audio():
         return jsonify({"ok": False, "transcribed": False, "error": exc.message})
 
 
+@app.route("/api/correct", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def correct_text():
+    """
+    Corrige l'orthographe et la grammaire d'un texte via GROQ.
+
+    Appelé par le bot Node.js pour la commande .correct (message cité ou
+    texte direct). Le prompt système dédié est défini dans ai_service ; la
+    clé GROQ ne quitte jamais le backend.
+    """
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text", "") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "Aucun texte à corriger."}), 400
+    if len(text) > 4000:
+        return jsonify({"ok": False, "error": "Texte trop long (4000 caractères max)."}), 400
+
+    try:
+        corrected, model, tokens, duration_ms = ai_service.correct(text)
+        return jsonify({
+            "ok": True,
+            "corrected": corrected,
+            "model": model,
+            "tokens_used": tokens,
+            "duration_ms": duration_ms,
+        })
+    except ai_service.AIError as exc:
+        return jsonify({"ok": False, "error": exc.message}), 400
+
+
 # --------------------------------------------------------------------------- #
 #  WhatsApp (état + redémarrage)
 # --------------------------------------------------------------------------- #

@@ -691,6 +691,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .correct : correction orthographe/grammaire (IA) ---
+  if (/^\.correct\b/i.test(trimmed)) {
+    debugLog(`[correct] commande : ${trimmed}`);
+    handleCorrectCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[correct] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande secrète : simulation (à découvrir !) ---
   if (/^\.hack\b/i.test(trimmed)) {
     debugLog(`[secrete] commande : ${trimmed}`);
@@ -1503,6 +1512,74 @@ async function handleTranslateCommand(msg, remoteJid, body) {
   await sendChunks(remoteJid, bodyLines.join('\n'), msg);
   debugLog(`[translate] ${text.length} caractères → ${langCode} (${translated.length} caractères)`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🌐 [traduction → ${targetLabel}] ${translated.slice(0, 60)}`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .correct — correction orthographe/grammaire via l'IA (GROQ)       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * .correct — corrige l'orthographe et la grammaire d'un texte via l'IA.
+ *
+ * 2 usages :
+ *   .correct (réponse à un message) → corrige le message CITÉ
+ *   .correct <texte>                → corrige le texte saisi
+ * La correction est faite par le backend (clé GROQ) avec un prompt dédié :
+ * orthographe/grammaire/ponctuation, sans réécrire le style ni traduire.
+ */
+async function handleCorrectCommand(msg, remoteJid, body) {
+  let text = body.replace(/^\.correct\s*/i, '').trim();
+  let citedBy = '';
+
+  // Pas de texte saisi → on prend le message cité (réponse à un message)
+  if (!text) {
+    const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+    const quoted = ctx.quotedMessage || null;
+    text = quotedTextOf(quoted);
+    if (text) {
+      citedBy = contactLabel(ctx.participant || ctx.remoteJid || '');
+    }
+  }
+
+  if (!text) {
+    return replyError(remoteJid,
+      '✏️ *Commande .correct*\n'
+      + 'Corrige l\'orthographe et la grammaire d\'un texte (via l\'IA).\n\n'
+      + 'Utilisation :\n'
+      + '• RÉPONDEZ à un message avec `.correct`\n'
+      + '• `.correct voici un texte a coriger`\n\n'
+      + 'La langue et le style sont conservés.', msg);
+  }
+  if (text.length > 4000) {
+    return replyError(remoteJid, '❌ Texte trop long (4000 caractères max).', msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '✏️ Correction en cours…' }).catch(() => {});
+
+  let data;
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/correct`, { text }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000,
+    });
+    data = res.data || {};
+  } catch (err) {
+    debugLog(`[correct] appel backend impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de joindre le service de correction. Réessayez.', msg);
+  }
+
+  if (!data.ok || !data.corrected) {
+    return replyError(remoteJid,
+      `❌ ${data.error || 'Correction impossible. Vérifiez la clé GROQ dans le panneau (onglet IA).'}`,
+      msg);
+  }
+
+  const lines = ['✏️ *Texte corrigé*', ''];
+  if (citedBy) lines.push(`_De ${citedBy} :_`, '');
+  lines.push(`💬 ${text}`, '', `✅ ${data.corrected}`);
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[correct] ${text.length} caractères corrigés → ${data.corrected.length} caractères`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✏️ [correction] ${data.corrected.slice(0, 60)}`);
 }
 
 /* -------------------------------------------------------------------------- */

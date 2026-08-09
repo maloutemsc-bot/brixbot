@@ -30,6 +30,18 @@ MODELS = [
     {"value": "gemma2-9b-it", "label": "Gemma 2 9B (déprécié ?)"},
 ]
 
+# Prompt système dédié à la commande .correct : corriger SANS réécrire le style,
+# en gardant la langue et le ton d'origine. La réponse ne contient QUE le texte
+# corrigé (aucun commentaire), pour un rendu propre dans le chat WhatsApp.
+CORRECT_SYSTEM_PROMPT = (
+    "Tu es un correcteur d'orthographe et de grammaire méticuleux. "
+    "Corrige le texte fourni : orthographe, grammaire, conjugaison, ponctuation "
+    "et accords. Conserve TOUJOURS la langue et le style d'origine (ne traduis "
+    "jamais). Ne réécris pas le texte : corrige-le uniquement, en préservant le "
+    "sens et le ton. Réponds avec le texte corrigé SEUL, sans guillemets, sans "
+    "commentaire ni explication. Si le texte est déjà correct, renvoie-le tel quel."
+)
+
 
 class AIError(Exception):
     """Erreur métier liée à l'API GROQ (message affichable à l'utilisateur)."""
@@ -125,12 +137,15 @@ def transcribe(audio_bytes, mime="audio/ogg"):
 # --------------------------------------------------------------------------- #
 #  Chat
 # --------------------------------------------------------------------------- #
-def chat(user_message, history=None):
+def chat(user_message, history=None, system_prompt=None):
     """
     Envoie un message à GROQ, avec un éventuel historique de conversation.
 
     history : liste optionnelle de dicts {"role": "user"|"assistant", "content": ...}
               injectés avant le message courant (mémoire de conversation).
+
+    system_prompt : prompt système à utiliser à la place de celui configuré
+                    dans le panneau (ex: correction de texte avec .correct).
 
     Renvoie un tuple : (réponse, modèle, tokens_utilisés, durée_ms).
     Lève AIError en cas de problème.
@@ -145,7 +160,11 @@ def chat(user_message, history=None):
 
     temperature = max(0.0, min(1.0, float(cfg.temperature if cfg.temperature is not None else 0.7)))
     max_tokens = max(1, min(8192, int(cfg.max_tokens or 1024)))
-    system_prompt = (cfg.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
+    # Le prompt système par défaut est celui du panneau ; un prompt dédié
+    # (ex: correction) peut le remplacer pour un usage précis.
+    system_prompt = (system_prompt or "").strip() \
+        or (cfg.system_prompt or "").strip() \
+        or DEFAULT_SYSTEM_PROMPT
 
     messages = [{"role": "system", "content": system_prompt}]
     if history:
@@ -196,6 +215,25 @@ def chat(user_message, history=None):
             "Choisissez un modèle actif dans l'onglet IA." % cfg.model
         )
     raise AIError("Erreur API GROQ (HTTP %d)." % status)
+
+
+def correct(text):
+    """
+    Corrige l'orthographe et la grammaire d'un texte via GROQ.
+
+    Utilise un prompt système dédié (CORRECT_SYSTEM_PROMPT) qui demande une
+    correction pure, sans réécriture ni commentaire, en conservant la langue
+    et le style d'origine.
+
+    Renvoie un tuple : (texte_corrigé, modèle, tokens_utilisés, durée_ms).
+    Lève AIError en cas de problème (clé manquante, quota, API…).
+    """
+    text = (text or "").strip()
+    if not text:
+        raise AIError("Aucun texte à corriger.")
+    if len(text) > 4000:
+        raise AIError("Texte trop long à corriger (4000 caractères maximum).")
+    return chat(text, system_prompt=CORRECT_SYSTEM_PROMPT)
 
 
 def test(user_message):

@@ -1,0 +1,110 @@
+[2026-08-09 18:20] 🤖 BrixBot : 🌐 [traduction → Anglais 🇬🇧] Hello
+[2026-08-09 18:20] 🤖 BrixBot : 🌐 [traduction → Français 🇫🇷] Hello
+[2026-08-09 18:21] Test : .translate en Bonjour
+[2026-08-09 18:21] 🤖 BrixBot : 🌐 [traduction → Anglais 🇬🇧] Hello
+[2026-08-09 18:21] Test : .translate fr
+[2026-08-09 18:21] 🤖 BrixBot : 🌐 [traduction → Français 🇫🇷] Hello
+[2026-08-09 18:21] Test : .translate
+[2026-08-09 18:21] Test : .translate xyz Bonjour tout le monde
+[2026-08-09 18:21] 🤖 BrixBot : 🌐 [traduction → Français 🇫🇷] Hello
+[2026-08-09 18:21] Test : Bonjour les amis
+[2026-08-09 18:21] Test : .meta
+[2026-08-09 18:21] 🤖 BrixBot : 🔍 [métadonnées affichées]
+[2026-08-09 18:21] Test : .tts Bonjour
+[2026-08-09 18:21] Test : .translate en Bonjour
+[2026-08-09 18:22] Test : .translate en Bonjour
+[2026-08-09 18:22] Test : .translate fr
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 *Traduction* (→ *Anglais 🇬🇧*)
+
+💬 Bonjour
+
+✨ Hello
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 [traduction → Anglais 🇬🇧] Hello
+[2026-08-09 18:22] Test : .translate
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 *Traduction* (→ *Français 🇫🇷*)
+
+💬 How are you?
+
+✨ Hello
+
+_Message de 33600000000_
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 *Commande .translate*
+Traduit un texte vers la langue de votre choix (gratuit, sans clé).
+
+Utilisation :
+• `.translate en Bonjour` — texte direct
+• `.translate es` (réponse à un message) — message cité
+• `.translate` (réponse) — message cité vers le français
+
+*Langues* : fr 🇫🇷 · en 🇬🇧 · es 🇪🇸 · de 🇩🇪 · it 🇮🇹 · pt 🇵🇹 · nl 🇳🇱 · ru 🇷🇺 · ar 🇸🇦 · zh 🇨🇳 · ja 🇯🇵 · ko 🇰🇷 · tr 🇹🇷 · pl 🇵🇱 · el 🇬🇷 · sv 🇸🇪 · no 🇳🇴 · da 🇩🇰 · fi 🇫🇮 · cs 🇨🇿 · hu 🇭🇺 · ro 🇷🇴 · uk 🇺🇦 · vi 🇻🇳 · id 🇮🇩 · th 🇹🇭 · hi 🇮🇳 · he 🇮🇱 · sw 🇰🇪
+Langue source détectée automatiquement.
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 [traduction → Français 🇫🇷] Hello
+[2026-08-09 18:22] Test : .translate xyz Bonjour tout le monde
+[2026-08-09 18:22] Test : Bonjour les amis
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 *Traduction* (→ *Français 🇫🇷*)
+
+💬 xyz Bonjour tout le monde
+
+✨ Hello
+[2026-08-09 18:22] 🤖 BrixBot : 🌐 [traduction → Français 🇫🇷] Hello
+[2026-08-09 18:22] Test : .meta
+[2026-08-09 18:22] 🤖 BrixBot : 🔍 *Métadonnées du message*
+💬 *Texte*
+• 🔤 Longueur : 5 caractère(s)
+[2026-08-09 18:22] 🤖 BrixBot : 🔍 [métadonnées affichées]
+[2026-08-09 18:22] Test : .tts Bonjour
+[2026-08-09 18:22] Test : .translate en Bonjour
+[2026-08-09 18:22] 🤖 BrixBot : 🗣 [voix] Bonjour
+[2026-08-09 18:28] 🤖 BrixBot : .translate en Bonjour
+[2026-08-09 18:28] Test : .translate fr
+[2026-08-09 18:28] 🤖 BrixBot : 🌐 *Traduction* (→ *Anglais 🇬🇧*)
+
+💬 Bonjour
+
+✨ Hello
+[2026-08-09 18:28] 🤖 BrixBot : 🎤 Une note vocale ne peut pas être traduite directement.
+Utilisez d'abord `.transcript` (réponse à la note vocale) pour la transcrire, puis `.translate`.
+[2026-08-09 18:28] 🤖 BrixBot : 🌐 [traduction → Anglais 🇬🇧] Hello
+[2026-08-09 18:28] Test : .translate en
+[2026-08-09 18:28] Test : .translate en aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[2026-08-09 18:28] 🤖 BrixBot : 🌐 *Traduction* (→ *Anglais 🇬🇧*)
+
+💬 Bonjour
+
+✨ Hello
+
+_Message de 33600000000_
+[2026-08-09 18:28] 🤖 BrixBot : ❌ Texte trop long (4000 caractères max).
+[2026-08-09 18:28] 🤖 BrixBot : 🌐 [traduction → Anglais 🇬🇧] Hello
+[2026-08-09 18:28] Test : coucou
+[2026-08-09 18:38] Test : .correct
+[2026-08-09 18:38] Test : .correct je sui tro fatigué
+[2026-08-09 18:38] 🤖 BrixBot : ✏️ *Texte corrigé*
+
+_De 33600000000 :_
+
+💬 je sui tro fatigué
+
+✅ Ceci est un texte corrige.
+[2026-08-09 18:38] 🤖 BrixBot : ✏️ [correction] Ceci est un texte corrige.
+[2026-08-09 18:38] Test : .correct
+[2026-08-09 18:38] 🤖 BrixBot : ✏️ *Texte corrigé*
+
+💬 je sui tro fatigué
+
+✅ Ceci est un texte corrige.
+[2026-08-09 18:38] 🤖 BrixBot : ✏️ *Commande .correct*
+Corrige l'orthographe et la grammaire d'un texte (via l'IA).
+
+Utilisation :
+• RÉPONDEZ à un message avec `.correct`
+• `.correct voici un texte a coriger`
+
+La langue et le style sont conservés.
+[2026-08-09 18:38] 🤖 BrixBot : ✏️ [correction] Ceci est un texte corrige.
+[2026-08-09 18:38] Test : .correct je sui tro fatigué
+[2026-08-09 18:38] Test : .correct je sui tro fatigué
+[2026-08-09 18:38] 🤖 BrixBot : ❌ Aucune cle API GROQ configurée.
+[2026-08-09 18:38] Test : coucou
+[2026-08-09 18:38] 🤖 BrixBot : ❌ Impossible de joindre le service de correction. Réessayez.
+[2026-08-09 18:38] Test : .correctement rédigé
