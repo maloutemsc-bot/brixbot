@@ -87,6 +87,7 @@ HELP_TEXT = (
     "• `.tel numéro` — chercher un numéro de téléphone\n"
     "• `.meteo ville` — météo en temps réel\n"
     "• `.traduis texte` — traduire en français\n"
+    "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"
     "• `.devise 100 EUR USD` — conversion de devises\n"
     "• `.me` — mon utilisation et mon état IA\n"
     "🤫 Psst… il existe des commandes secrètes. Sois curieux !\n"

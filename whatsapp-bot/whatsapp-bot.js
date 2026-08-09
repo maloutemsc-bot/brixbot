@@ -107,6 +107,52 @@ try { fs.mkdirSync(TESS_CACHE, { recursive: true }); } catch (_) { /* non bloqua
 // Limite de longueur du texte synthétisé (.tts — contrainte Google TTS)
 const TTS_MAX_CHARS = 200;
 
+// Langues supportées par .translate (code ISO → nom français + drapeau).
+// Le service de traduction est Google Translate (gratuit, sans clé), le même
+// que celui du backend (.traduis).
+const TRANSLATE_LANGS = {
+  fr: { name: 'Français', flag: '🇫🇷' },
+  en: { name: 'Anglais', flag: '🇬🇧' },
+  es: { name: 'Espagnol', flag: '🇪🇸' },
+  de: { name: 'Allemand', flag: '🇩🇪' },
+  it: { name: 'Italien', flag: '🇮🇹' },
+  pt: { name: 'Portugais', flag: '🇵🇹' },
+  nl: { name: 'Néerlandais', flag: '🇳🇱' },
+  ru: { name: 'Russe', flag: '🇷🇺' },
+  ar: { name: 'Arabe', flag: '🇸🇦' },
+  zh: { name: 'Chinois', flag: '🇨🇳' },
+  ja: { name: 'Japonais', flag: '🇯🇵' },
+  ko: { name: 'Coréen', flag: '🇰🇷' },
+  tr: { name: 'Turc', flag: '🇹🇷' },
+  pl: { name: 'Polonais', flag: '🇵🇱' },
+  el: { name: 'Grec', flag: '🇬🇷' },
+  sv: { name: 'Suédois', flag: '🇸🇪' },
+  no: { name: 'Norvégien', flag: '🇳🇴' },
+  da: { name: 'Danois', flag: '🇩🇰' },
+  fi: { name: 'Finnois', flag: '🇫🇮' },
+  cs: { name: 'Tchèque', flag: '🇨🇿' },
+  hu: { name: 'Hongrois', flag: '🇭🇺' },
+  ro: { name: 'Roumain', flag: '🇷🇴' },
+  uk: { name: 'Ukrainien', flag: '🇺🇦' },
+  vi: { name: 'Vietnamien', flag: '🇻🇳' },
+  id: { name: 'Indonésien', flag: '🇮🇩' },
+  th: { name: 'Thaïlandais', flag: '🇹🇭' },
+  hi: { name: 'Hindi', flag: '🇮🇳' },
+  he: { name: 'Hébreu', flag: '🇮🇱' },
+  sw: { name: 'Swahili', flag: '🇰🇪' },
+};
+// Limite de caractères par traduction (.translate — contrainte du service)
+const TRANSLATE_MAX_CHARS = 4000;
+// Alias anglais des langues (saisie naturelle : ".translate english")
+const TRANSLATE_EN_ALIASES = {
+  english: 'en', spanish: 'es', german: 'de', italian: 'it', portuguese: 'pt',
+  dutch: 'nl', russian: 'ru', arabic: 'ar', chinese: 'zh', japanese: 'ja',
+  korean: 'ko', turkish: 'tr', polish: 'pl', greek: 'el', swedish: 'sv',
+  norwegian: 'no', danish: 'da', finnish: 'fi', czech: 'cs', hungarian: 'hu',
+  romanian: 'ro', ukrainian: 'uk', vietnamese: 'vi', indonesian: 'id',
+  thai: 'th', hindi: 'hi', hebrew: 'he', swahili: 'sw', french: 'fr',
+};
+
 // Membres muets par groupe (persistés dans mute-store.json) : les messages
 // d'un membre muet sont supprimés automatiquement (le bot doit être admin).
 const MUTE_STORE = path.join(__dirname, 'mute-store.json');
@@ -632,6 +678,15 @@ async function handleMessage(msg) {
     debugLog(`[ocr] commande : ${trimmed}`);
     handleOcrCommand(msg, remoteJid).catch((err) => {
       debugLog(`[ocr] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .translate : traduction vers la langue choisie ---
+  if (/^\.translate\b/i.test(trimmed)) {
+    debugLog(`[translate] commande : ${trimmed}`);
+    handleTranslateCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[translate] erreur : ${err.message}`);
     });
     return;
   }
@@ -1330,6 +1385,124 @@ async function handleOcrCommand(msg, remoteJid) {
     ocrWorkerPromise = null; // un worker défaillant est recréé au prochain appel
     return replyError(remoteJid, '❌ Erreur OCR. Vérifiez que la photo est nette et réessayez.', msg);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .translate — traduction (Google Translate, gratuit, sans clé)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Résout un code de langue à partir d'un mot : code ISO ("en", "de"…),
+ * nom français ("anglais", "allemand"…) ou nom anglais ("english"…).
+ * Renvoie le code ISO, ou null si inconnu.
+ */
+function parseTranslateLang(word) {
+  const w = String(word || '').trim().toLowerCase();
+  if (!w) return null;
+  if (TRANSLATE_LANGS[w]) return w; // code ISO direct
+  // Recherche par nom français, puis anglais, puis code alternatif
+  const wNoAccent = w.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const [code, meta] of Object.entries(TRANSLATE_LANGS)) {
+    if (meta.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === wNoAccent) return code;
+  }
+  return TRANSLATE_EN_ALIASES[w] || null;
+}
+
+/** Texte du message cité (conversation / extendedText / légendes). */
+function quotedTextOf(quoted) {
+  if (!quoted) return '';
+  return (quoted.conversation || quoted.extendedTextMessage?.text
+    || quoted.imageMessage?.caption || quoted.videoMessage?.caption || '').trim();
+}
+
+/**
+ * .translate [langue] — traduit un texte vers la langue choisie (gratuit).
+ *
+ * 3 usages :
+ *   .translate en Bonjour        → traduit le texte saisi vers l'anglais
+ *   .translate en (réponse)      → traduit le message CITÉ vers l'anglais
+ *   .translate Bonjour (sans langue) → traduit vers le français (défaut)
+ * La langue source est détectée automatiquement par Google.
+ */
+async function handleTranslateCommand(msg, remoteJid, body) {
+  const rest = body.replace(/^\.translate\s*/i, '').trim();
+  const firstMatch = rest.match(/^(\S+)\s*([\s\S]*)$/);
+  let langCode = null;
+  let text = '';
+
+  if (firstMatch) {
+    const code = parseTranslateLang(firstMatch[1]);
+    if (code) {
+      langCode = code;
+      text = firstMatch[2].trim();
+    } else {
+      text = rest; // pas de langue reconnue → tout le texte, français par défaut
+    }
+  }
+  if (!langCode) langCode = 'fr';
+
+  // Pas de texte saisi → on prend le message cité (réponse à un message)
+  let citedBy = '';
+  let citedAudio = false;
+  if (!text) {
+    const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+    const quoted = ctx.quotedMessage || null;
+    text = quotedTextOf(quoted);
+    if (text) {
+      citedBy = contactLabel(ctx.participant || ctx.remoteJid || '');
+    } else if (quoted?.audioMessage?.ptt) {
+      citedAudio = true; // note vocale citée → on suggère .transcript
+    }
+  }
+
+  if (!text) {
+    if (citedAudio) {
+      return replyError(remoteJid,
+        '🎤 Une note vocale ne peut pas être traduite directement.\n'
+        + 'Utilisez d\'abord `.transcript` (réponse à la note vocale) pour la transcrire, puis `.translate`.', msg);
+    }
+    const list = Object.entries(TRANSLATE_LANGS)
+      .map(([code, meta]) => `${code} ${meta.flag}`).join(' · ');
+    return replyError(remoteJid,
+      '🌐 *Commande .translate*\n'
+      + 'Traduit un texte vers la langue de votre choix (gratuit, sans clé).\n\n'
+      + 'Utilisation :\n'
+      + '• `.translate en Bonjour` — texte direct\n'
+      + '• `.translate es` (réponse à un message) — message cité\n'
+      + '• `.translate` (réponse) — message cité vers le français\n\n'
+      + `*Langues* : ${list}\n`
+      + 'Langue source détectée automatiquement.', msg);
+  }
+  if (text.length > TRANSLATE_MAX_CHARS) {
+    return replyError(remoteJid, `❌ Texte trop long (${TRANSLATE_MAX_CHARS} caractères max).`, msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '🌐 Traduction…' }).catch(() => {});
+
+  let translated;
+  try {
+    const { data } = await axios.get('https://translate.googleapis.com/translate_a/single', {
+      params: { client: 'gtx', sl: 'auto', tl: langCode, dt: 't', q: text },
+      timeout: 30000,
+    });
+    const segments = (Array.isArray(data) && Array.isArray(data[0])) ? data[0] : [];
+    translated = segments.map((seg) => (Array.isArray(seg) ? seg[0] : '')).join('').trim();
+  } catch (err) {
+    debugLog(`[translate] échec : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de traduire. Réessayez.', msg);
+  }
+  if (!translated) {
+    return replyError(remoteJid, '❌ Aucune traduction renvoyée. Réessayez.', msg);
+  }
+
+  const meta = TRANSLATE_LANGS[langCode];
+  const targetLabel = meta ? `${meta.name} ${meta.flag}` : langCode;
+  const head = `🌐 *Traduction* (→ *${targetLabel}*)`;
+  const bodyLines = [head, '', `💬 ${text}`, '', `✨ ${translated}`];
+  if (citedBy) bodyLines.push('', `_Message de ${citedBy}_`);
+  await sendChunks(remoteJid, bodyLines.join('\n'), msg);
+  debugLog(`[translate] ${text.length} caractères → ${langCode} (${translated.length} caractères)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🌐 [traduction → ${targetLabel}] ${translated.slice(0, 60)}`);
 }
 
 /* -------------------------------------------------------------------------- */
