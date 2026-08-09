@@ -39,3 +39,4 @@ whatsapp-bot/*-player-script.js
 whatsapp-bot/tessdata-cache/
 whatsapp-bot/mute-store.json
 whatsapp-bot/bot-store.json
+transcript.txt
