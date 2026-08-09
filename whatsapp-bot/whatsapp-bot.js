@@ -138,6 +138,8 @@ const TESS_CACHE = path.join(__dirname, 'tessdata-cache');
 try { fs.mkdirSync(TESS_CACHE, { recursive: true }); } catch (_) { /* non bloquant */ }
 // Limite de longueur du texte synthétisé (.tts — contrainte Google TTS)
 const TTS_MAX_CHARS = 200;
+// Taille maximale d'un texte à résumer (.resume — contrainte du backend)
+const RESUME_MAX_CHARS = 6000;
 
 // Langues supportées par .translate (code ISO → nom français + drapeau).
 // Le service de traduction est Google Translate (gratuit, sans clé), le même
@@ -753,6 +755,16 @@ async function handleMessage(msg) {
     debugLog(`[correct] commande : ${trimmed}`);
     handleCorrectCommand(msg, remoteJid, trimmed).catch((err) => {
       debugLog(`[correct] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .resume : résumé d'un message cité par l'IA ---
+  // (?=\s|$) plutôt que \b : \b échoue après un accent (é n'est pas un \w).
+  if (/^\.(?:resume|resumé|resumer|résumé)(?:\s|$)/i.test(trimmed)) {
+    debugLog(`[resume] commande : ${trimmed}`);
+    handleResumeCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[resume] erreur : ${err.message}`);
     });
     return;
   }
@@ -1646,6 +1658,70 @@ async function handleCorrectCommand(msg, remoteJid, body) {
   await sendChunks(remoteJid, lines.join('\n'), msg);
   debugLog(`[correct] ${text.length} caractères corrigés → ${data.corrected.length} caractères`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✏️ [correction] ${data.corrected.slice(0, 60)}`);
+}
+
+/**
+ * .resume — résume par l'IA le message CITÉ (ou un texte saisi après la commande).
+ *
+ * Répondez à un long message avec `.resume` : l'IA produit un résumé fidèle
+ * en français (une ligne d'intro + puces). Un texte direct est aussi accepté :
+ * `.resume <texte>`.
+ */
+async function handleResumeCommand(msg, remoteJid, body) {
+  let text = body.replace(/^\.(?:resume|resumé|resumer|résumé)(?:\s|$)/i, '').trim();
+  let citedBy = '';
+
+  // Pas de texte saisi → on prend le message cité (réponse à un message)
+  if (!text) {
+    const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+    const quoted = ctx.quotedMessage || null;
+    text = quotedTextOf(quoted);
+    if (text) {
+      citedBy = contactLabel(ctx.participant || ctx.remoteJid || '');
+    }
+  }
+
+  if (!text) {
+    return replyError(remoteJid,
+      '📝 *Commande .resume*\n'
+      + 'Résume un message avec l\'IA (en français).\n\n'
+      + 'Utilisation :\n'
+      + '• RÉPONDEZ à un message avec `.resume`\n'
+      + '• `.resume <texte>` pour résumer un texte direct.', msg);
+  }
+  if (text.length > RESUME_MAX_CHARS) {
+    return replyError(remoteJid, `❌ Texte trop long (${RESUME_MAX_CHARS} caractères max).`, msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '📝 Résumé en cours…' }).catch(() => {});
+
+  let data;
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/resume`, { text }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000,
+    });
+    data = res.data || {};
+  } catch (err) {
+    debugLog(`[resume] appel backend impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de joindre le service de résumé. Réessayez.', msg);
+  }
+
+  if (!data.ok || !data.summary) {
+    return replyError(remoteJid,
+      `❌ ${data.error || 'Résumé impossible. Vérifiez la clé GROQ dans le panneau (onglet IA).'}`,
+      msg);
+  }
+
+  const lines = ['📝 *Résumé*', ''];
+  if (citedBy) lines.push(`_Message de ${citedBy} :_`, '');
+  lines.push(`${data.summary}`, '');
+  const secs = Math.round((data.duration_ms || 0) / 1000);
+  const footer = `_via ${data.model || 'IA'}` + (secs > 0 ? ` · ${secs} s_` : '_');
+  lines.push(footer);
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[resume] ${text.length} caractères résumés → ${data.summary.length} caractères`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📝 [résumé] ${data.summary.slice(0, 60)}`);
 }
 
 /* -------------------------------------------------------------------------- */

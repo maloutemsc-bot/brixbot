@@ -99,6 +99,7 @@ HELP_TEXT = (
     "📥 `.extract` (réponse à une image/vocal) — renvoie le média dans le chat.\n"
     "🔍 `.meta` (réponse à un message) — affiche ses métadonnées techniques.\n"
     "📦 `.json` (réponse à un message) — affiche le message en JSON brut.\n"
+    "📝 `.resume` (réponse à un message) — résume le message avec l'IA.\n"
     "🆔 `.id` — affiche les identifiants de la conversation.\n"
     "🗣 `.tts texte` — transforme un texte en note vocale.\n"
     "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"

@@ -405,6 +405,38 @@ def correct_text():
         return jsonify({"ok": False, "error": exc.message}), 400
 
 
+@app.route("/api/resume", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def resume_text():
+    """
+    Résume un texte via GROQ (commande .resume).
+
+    Appelé par le bot Node.js : le texte cité est résumé par l'IA avec un
+    prompt système dédié (défini dans ai_service). La clé GROQ ne quitte
+    jamais le backend.
+    """
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text", "") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "Aucun texte à résumer."}), 400
+    if len(text) > ai_service.RESUME_MAX_CHARS:
+        return jsonify({"ok": False,
+                        "error": "Texte trop long (%d caractères max)." % ai_service.RESUME_MAX_CHARS}), 400
+
+    try:
+        summary, model, tokens, duration_ms = ai_service.resume(text)
+        return jsonify({
+            "ok": True,
+            "summary": summary,
+            "model": model,
+            "tokens_used": tokens,
+            "duration_ms": duration_ms,
+        })
+    except ai_service.AIError as exc:
+        return jsonify({"ok": False, "error": exc.message}), 400
+
+
 # --------------------------------------------------------------------------- #
 #  WhatsApp (état + redémarrage)
 # --------------------------------------------------------------------------- #

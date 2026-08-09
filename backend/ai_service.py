@@ -42,6 +42,19 @@ CORRECT_SYSTEM_PROMPT = (
     "commentaire ni explication. Si le texte est déjà correct, renvoie-le tel quel."
 )
 
+# Prompt système dédié à la commande .resume : résumer sans rien inventer.
+RESUME_SYSTEM_PROMPT = (
+    "Tu es un assistant qui rédige des résumés clairs et fidèles. "
+    "Résume le texte fourni en français : une phrase d'introduction "
+    "(1 ligne) suivie de 3 à 6 puces (•) avec les points essentiels. "
+    "Sois concis, garde uniquement l'information importante et ne rien "
+    "inventer : si un détail n'est pas dans le texte, ne l'ajoute pas. "
+    "Réponds avec le résumé SEUL, sans préambule ni commentaire."
+)
+
+# Taille maximale d'un texte à résumer (.resume)
+RESUME_MAX_CHARS = 6000
+
 
 class AIError(Exception):
     """Erreur métier liée à l'API GROQ (message affichable à l'utilisateur)."""
@@ -234,6 +247,27 @@ def correct(text):
     if len(text) > 4000:
         raise AIError("Texte trop long à corriger (4000 caractères maximum).")
     return chat(text, system_prompt=CORRECT_SYSTEM_PROMPT)
+
+
+def resume(text):
+    """
+    Résume un texte via GROQ (commande .resume).
+
+    Utilise un prompt système dédié (RESUME_SYSTEM_PROMPT) qui demande un
+    résumé fidèle en français : une ligne d'introduction + puces de points
+    clés, sans rien inventer.
+
+    Renvoie un tuple : (résumé, modèle, tokens_utilisés, durée_ms).
+    Lève AIError en cas de problème (clé manquante, quota, API…).
+    """
+    text = (text or "").strip()
+    if not text:
+        raise AIError("Aucun texte à résumer.")
+    if len(text) > RESUME_MAX_CHARS:
+        raise AIError(
+            "Texte trop long à résumer (%d caractères maximum)." % RESUME_MAX_CHARS
+        )
+    return chat(text, system_prompt=RESUME_SYSTEM_PROMPT)
 
 
 def test(user_message):
