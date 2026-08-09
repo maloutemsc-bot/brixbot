@@ -1607,17 +1607,25 @@ const PIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KH
  * Recherche des URLs d'images sur DuckDuckGo Images (gratuit, sans clé API).
  * Le token vqd est récupéré depuis la page de recherche, puis les résultats
  * JSON sont interrogés. Renvoie des URLs https (ou une liste vide).
+ *
+ * Avec nsfw=true, le filtre SafeSearch est désactivé (paramètre kp=-2) :
+ * la recherche peut alors renvoyer du contenu adulte. Par défaut le filtre
+ * de sécurité reste ACTIF.
  */
-async function searchDdgImages(query, limit) {
+async function searchDdgImages(query, limit, nsfw = false) {
+  const pageParams = { q: query, ia: 'web' };
+  if (nsfw) pageParams.kp = '-2';
   const page = await axios.get('https://duckduckgo.com/', {
-    params: { q: query, ia: 'web' },
+    params: pageParams,
     headers: { 'User-Agent': PIN_UA },
     timeout: 20000,
   });
   const vqd = String(page.data || '').match(/vqd="([^"]+)"/)?.[1];
   if (!vqd) return [];
+  const imageParams = { l: 'us-en', o: 'json', q: query, vqd };
+  if (nsfw) imageParams.kp = '-2';
   const res = await axios.get('https://duckduckgo.com/i.js', {
-    params: { l: 'us-en', o: 'json', q: query, vqd },
+    params: imageParams,
     headers: { 'User-Agent': PIN_UA, Referer: 'https://duckduckgo.com/?q=' + encodeURIComponent(query) },
     timeout: 25000,
   });
@@ -1669,6 +1677,7 @@ async function searchWikiImages(query, limit) {
 async function handlePinCommand(msg, remoteJid, body) {
   let rest = body.replace(/^\.pin\s*/i, '').trim();
   let count = PIN_DEFAULT_COUNT;
+  let nsfw = false;
   let query = rest;
 
   // Nombre optionnel au début : ".pin 3 chat" → 3 images de "chat"
@@ -1678,6 +1687,14 @@ async function handlePinCommand(msg, remoteJid, body) {
     count = Math.min(parsedCount, PIN_MAX_COUNT);
     query = rest.slice(firstWord.length).trim();
   }
+  // Mode NSFW : ".pin nsfw chat" ou ".pin 3 nsfw chat" — désactive le filtre
+  // SafeSearch (la recherche peut alors renvoyer du contenu adulte).
+  // Le mot-clé doit être EXACTEMENT "nsfw" (pas "nsfw-mode" ni "nsfwchat").
+  const nsfwWord = query.split(' ')[0] || '';
+  if (/^nsfw$/i.test(nsfwWord)) {
+    nsfw = true;
+    query = query.slice(nsfwWord.length).trim();
+  }
 
   if (!query) {
     return replyError(remoteJid,
@@ -1685,11 +1702,18 @@ async function handlePinCommand(msg, remoteJid, body) {
       + 'Envoie des images correspondant à une recherche (gratuit, sans clé).\n\n'
       + 'Utilisation :\n'
       + '• `.pin chat` — 5 images de chats\n'
-      + '• `.pin 3 chat mignon` — 3 images (nombre optionnel, 1 à 10)\n\n'
+      + '• `.pin 3 chat mignon` — 3 images (nombre optionnel, 1 à 10)\n'
+      + '• `.pin nsfw chat` — désactive le filtre de sécurité 🔞 (adultes uniquement)\n\n'
       + 'Sources : DuckDuckGo Images · Wikimedia Commons.', msg);
   }
 
-  if (sock) sock.sendMessage(remoteJid, { text: `📌 Recherche d'images pour « ${query} »…` }).catch(() => {});
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: nsfw
+        ? `🔞 Recherche NSFW pour « ${query} »… (contenu adulte possible)`
+        : `📌 Recherche d'images pour « ${query} »…`,
+    }).catch(() => {});
+  }
 
   // 1) Recherche des URLs : DuckDuckGo d'abord, Wikimedia en secours.
   // On demande PLUS d'URLs que le nombre voulu : certains liens sont morts ou
@@ -1699,12 +1723,15 @@ async function handlePinCommand(msg, remoteJid, body) {
   let wikiTried = false; // Wikimedia est tenté au plus une fois (secours ou complément)
   let urls = [];
   try {
-    urls = await searchDdgImages(query, fetchCount);
+    urls = await searchDdgImages(query, fetchCount, nsfw);
   } catch (err) {
     debugLog(`[pin] DuckDuckGo indisponible : ${err.message}`);
   }
-  if (!urls.length) {
-    // Secours direct : DuckDuckGo n'a rien renvoyé
+  // En mode NSFW, on ne mélange JAMAIS avec Wikimedia : ses images sont toujours
+  // "sûres" et n'ont rien à faire dans une recherche adulte.
+  if (nsfw) wikiTried = true;
+  if (!urls.length && !nsfw) {
+    // Secours direct : DuckDuckGo n'a rien renvoyé (mode normal uniquement)
     try {
       urls = await searchWikiImages(query, fetchCount);
       wikiTried = true;
