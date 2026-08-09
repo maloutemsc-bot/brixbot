@@ -2429,15 +2429,107 @@ const afkNotified = {}; // "groupe|membre" → timestamp
 // la commande .clear les supprime pour tout le monde. WhatsApp limite la
 // suppression aux messages de moins de ~2 jours.
 const chatKeys = {}; // { [remoteJid]: [WAMessageKey] }
-const CLEAR_MAX = 200; // nombre max de messages purgés en une commande
+const CLEAR_MAX = 1000; // nombre max de messages chargés/supprimés en une commande
+// Historique à la demande (History Sync On Demand) : le téléphone renvoie les
+// vieux messages par lots, ce qui permet de supprimer bien plus que la session.
+const CLEAR_HISTORY_BATCH = 100; // messages demandés à chaque requête
+const CLEAR_HISTORY_TIMEOUT = 60000; // temps max consacré au chargement (ms)
+const CLEAR_HISTORY_ROUNDS = 20; // nombre max de requêtes de pagination
+const CLEAR_HISTORY_GROWTH_WAIT = 4000; // attente max d'un lot (ms) : le téléphone
+// répond en général en < 2 s ; 4 s suffisent pour chaque round (y compris le
+// dernier, vide) sans faire traîner la commande.
 const CLEAR_BATCH = 10; // taille des lots (évite le rate-limit WhatsApp)
 
 /**
- * .clear — supprime les messages récents de la conversation (pour tout le monde).
+ * .clear — supprime TOUS les messages de la conversation (pour tout le monde).
  *   - Groupe  : réservé aux administrateurs.
  *   - Privé   : réservé au propriétaire (compte lié au bot).
  * Deux temps : `.clear` affiche le nombre, `.clear oui` confirme et purge.
  */
+/**
+ * Charge les clés de l'historique d'un chat via History Sync On Demand.
+ *
+ * Le bot demande au TÉLÉPHONE connecté (sock.fetchMessageHistory) de renvoyer
+ * les messages du chat par lots (du plus récent au plus ancien). Les messages
+ * arrivent par l'événement "messaging-history.set" (Baileys télécharge la
+ * notification d'historique reçue). La boucle s'arrête quand plus rien
+ * n'arrive, quand maxKeys est atteint, ou après timeoutMs.
+ *
+ * Renvoie la liste des clés (WAMessageKey), dédupliquées par id.
+ */
+async function loadChatHistoryKeys(remoteJid, startKey, maxKeys, timeoutMs) {
+  if (!sock || typeof sock.fetchMessageHistory !== 'function') return [];
+  const keyMap = new Map(); // id -> clé
+
+  const onHistory = (data) => {
+    const messages = (data && Array.isArray(data.messages)) ? data.messages : [];
+    for (const m of messages) {
+      const k = m && m.key;
+      if (k && k.remoteJid === remoteJid && k.id) {
+        // On garde le timestamp AVEC la clé : il sert de curseur de pagination
+        // (m.key ne le porte pas — c'était un bug : pagination bloquée au round 1).
+        keyMap.set(k.id, { ...k, messageTimestamp: m.messageTimestamp });
+      }
+    }
+  };
+  sock.ev.on('messaging-history.set', onHistory);
+  try {
+    const deadline = Date.now() + timeoutMs;
+    let cursorKey = startKey;
+    let cursorTs = startKey ? startKey.messageTimestamp : null;
+    for (let round = 0; round < CLEAR_HISTORY_ROUNDS && Date.now() < deadline; round++) {
+      const before = keyMap.size;
+      try {
+        await sock.fetchMessageHistory(CLEAR_HISTORY_BATCH, cursorKey, cursorTs);
+      } catch (err) {
+        debugLog(`[clear] historique à la demande refusé : ${err.message}`);
+        break;
+      }
+      // Le téléphone doit répondre : on attend que de nouvelles clés arrivent
+      const grew = await waitForHistoryGrowth(() => keyMap.size, before, CLEAR_HISTORY_GROWTH_WAIT);
+      if (!grew || keyMap.size >= maxKeys) break;
+      // Curseur suivant : le message le PLUS ANCIEN reçu jusqu'ici
+      let oldest = null;
+      let oldestTs = Number.MAX_SAFE_INTEGER;
+      for (const k of keyMap.values()) {
+        const ts = toMessageTs(k.messageTimestamp);
+        if (ts !== null && ts < oldestTs) {
+          oldestTs = ts;
+          oldest = k;
+        }
+      }
+      if (!oldest) break;
+      cursorKey = oldest;
+      cursorTs = oldest.messageTimestamp;
+    }
+  } finally {
+    sock.ev.off('messaging-history.set', onHistory);
+  }
+  return [...keyMap.values()];
+}
+
+/** Attend que sizeFn() dépasse before (arrivée de nouveaux messages d'historique). */
+async function waitForHistoryGrowth(sizeFn, before, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (sizeFn() > before) return true;
+    await sleep(300);
+  }
+  return sizeFn() > before;
+}
+
+/** Timestamp lisible d'un message (number, Long ou bigint) → number, ou null. */
+function toMessageTs(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'bigint') return Number(value);
+  if (value && typeof value.toNumber === 'function') {
+    try { return value.toNumber(); } catch (_) { /* Long trop grand */ }
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
   // Autorisations
   if (isGroup) {
@@ -2445,52 +2537,78 @@ async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
       return replyError(remoteJid, '🔒 Cette commande est réservée aux administrateurs du groupe.', msg);
     }
   } else if (!msg.key.fromMe) {
-    return replyError(remoteJid, '🔒 Cette commande n\'est utilisable que par le propriétaire en message privé.', msg);
+    return replyError(remoteJid, "🔒 Cette commande n'est utilisable que par le propriétaire en message privé.", msg);
   }
 
-  const keys = chatKeys[remoteJid] || [];
+  if (sock) sock.sendMessage(remoteJid, { text: "🧹 Chargement de l'historique…" }).catch(() => {});
+
+  // 1) Historique à la demande : les vieux messages du chat (paginé)
+  const historyKeys = await loadChatHistoryKeys(remoteJid, msg.key, CLEAR_MAX, CLEAR_HISTORY_TIMEOUT);
+
+  // 2) Fusion avec les messages vus depuis le démarrage du bot
+  const allKeys = new Map();
+  for (const k of (chatKeys[remoteJid] || [])) {
+    if (k && k.id) allKeys.set(k.id, k);
+  }
+  for (const k of historyKeys) {
+    if (k && k.id) allKeys.set(k.id, k);
+  }
+  const keys = [...allKeys.values()].slice(0, CLEAR_MAX);
 
   if (!keys.length) {
     return replyError(remoteJid,
-      '🧹 Aucun message à purger pour le moment.\n_Seuls les messages vus par le bot depuis son démarrage sont concernés (et de moins de ~2 jours)._', msg);
+      "🧹 Aucun message à purger pour le moment.\n"
+      + "_Le téléphone n'a pas renvoyé d'historique (hors ligne ?) et aucun message récent n'a été vu._", msg);
   }
 
-  const count = Math.min(keys.length, CLEAR_MAX);
+  const count = keys.length;
   if (!/^\s*(oui|yes|confirmer|y)\s*$/i.test(body.replace(/^\.clear\s*/i, ''))) {
     return replyError(remoteJid,
       `🧹 *Confirmation requise*\n\n`
-      + `${count} message(s) seront supprimés *pour tout le monde*.\n`
-      + `Tapez \`.clear oui\` pour confirmer.`, msg);
+      + `${count} message(s) seront supprimés *pour tout le monde*,\n`
+      + `et la conversation sera vidée *entièrement* de ton côté.\n`
+      + 'Tapez .clear oui pour confirmer.', msg);
   }
 
-  const batch = keys.slice(0, count);
-  if (sock) sock.sendMessage(remoteJid, { text: `🧹 Purge de ${batch.length} message(s)…` }).catch(() => {});
+  if (sock) sock.sendMessage(remoteJid, { text: `🧹 Purge de ${count} message(s)…` }).catch(() => {});
 
+  // 3) Suppression "pour tout le monde", par lots espacés (anti-rate-limit)
   let deleted = 0;
   try {
-    for (let i = 0; i < batch.length; i += CLEAR_BATCH) {
-      const chunk = batch.slice(i, i + CLEAR_BATCH);
+    for (let i = 0; i < keys.length; i += CLEAR_BATCH) {
+      const chunk = keys.slice(i, i + CLEAR_BATCH);
       await Promise.all(chunk.map((k) =>
         sock.sendMessage(remoteJid, { delete: k })
           .then(() => { deleted += 1; })
-          .catch(() => { /* message déjà supprimé, trop vieux, ou droits insuffisants */ })
+          .catch(() => { /* déjà supprimé, trop vieux, ou droits insuffisants */ })
       ));
-      if (i + CLEAR_BATCH < batch.length) await sleep(400); // espacement anti-rate-limit
+      if (i + CLEAR_BATCH < keys.length) await sleep(400); // espacement anti-rate-limit
     }
   } catch (err) {
-    debugLog(`[clear] interruption : ${err.message}`);
+    debugLog(`[clear] interruption de la purge : ${err.message}`);
+  }
+
+  // 4) Vide ENTIÈREMENT la conversation côté compte (même les vieux messages)
+  let clearedLocally = false;
+  if (sock && typeof sock.chatModify === 'function') {
+    try {
+      await sock.chatModify({ clear: true, lastMessages: [] }, remoteJid);
+      clearedLocally = true;
+    } catch (err) {
+      debugLog(`[clear] chatModify échoué : ${err.message}`);
+    }
   }
 
   // On retire de la liste les messages traités
-  const processed = new Set(batch.map((k) => k.id));
-  chatKeys[remoteJid] = keys.filter((k) => !processed.has(k.id));
+  const processed = new Set(keys.map((k) => k.id));
+  chatKeys[remoteJid] = (chatKeys[remoteJid] || []).filter((k) => !processed.has(k.id));
 
-  await sock.sendMessage(remoteJid, {
-    text: `✅ ${deleted}/${batch.length} messages supprimés pour tout le monde.\n`
-      + '⚠️ WhatsApp limite la suppression aux messages de moins de ~2 jours.',
-  }, { quoted: msg });
-  debugLog(`[clear] ${deleted}/${batch.length} supprimés dans ${remoteJid}`);
-  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧹 [purge ${deleted}/${batch.length}]`);
+  const lines = [`✅ ${deleted}/${count} messages supprimés pour tout le monde.`];
+  if (clearedLocally) lines.push('🗑 La conversation a été vidée entièrement de ton côté.');
+  lines.push('⚠️ WhatsApp limite la suppression pour tous aux messages de moins de ~2 jours.');
+  await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg });
+  debugLog(`[clear] ${deleted}/${count} supprimés dans ${remoteJid} (vidage local: ${clearedLocally})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧹 [purge ${deleted}/${count}]`);
 }
 
 /**
