@@ -37,7 +37,7 @@ from flask_limiter.util import get_remote_address
 import ai_service
 import brixhub_service
 import whatsapp_handler
-from database import AIConfig, AILog, BotConfig, CommandLog, db, init_db, utc_now_iso
+from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, init_db, utc_now_iso
 
 # --------------------------------------------------------------------------- #
 #  Configuration de l'application
@@ -403,6 +403,29 @@ def correct_text():
         })
     except ai_service.AIError as exc:
         return jsonify({"ok": False, "error": exc.message}), 400
+
+
+@app.route("/api/ai/memory/clear", methods=["POST"])
+@require_bot_key
+@limiter.limit("60 per minute")
+def clear_ai_memory():
+    """
+    Efface la mémoire IA d'un utilisateur (commande .clearmem).
+
+    Le bot Node.js envoie l'identifiant (jid) de l'expéditeur dont il faut
+    oublier le contexte : toutes les entrées AIMemory de ce sender sont
+    supprimées en base. L'IA repartira de zéro avec cet utilisateur.
+    """
+    data = request.get_json(silent=True) or {}
+    sender = str(data.get("sender", "") or "").strip()
+    if not sender:
+        return jsonify({"ok": False, "error": "Aucun expéditeur fourni."}), 400
+    if len(sender) > 100:
+        return jsonify({"ok": False, "error": "Expéditeur invalide."}), 400
+
+    deleted = AIMemory.query.filter_by(sender=sender).delete()
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": deleted})
 
 
 @app.route("/api/resume", methods=["POST"])

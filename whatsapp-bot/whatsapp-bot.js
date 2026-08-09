@@ -823,6 +823,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .clearmem : efface la mémoire IA de l'utilisateur cité ---
+  if (/^\.clearmem\b/i.test(trimmed)) {
+    debugLog(`[clearmem] commande : ${trimmed}`);
+    handleClearMemCommand(msg, remoteJid, sender).catch((err) => {
+      debugLog(`[clearmem] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
       from: sender,
@@ -2752,6 +2761,65 @@ async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
   await sock.sendMessage(remoteJid, { text: lines.join('\n') }, { quoted: msg });
   debugLog(`[clear] ${deleted}/${count} supprimés dans ${remoteJid} (vidage local: ${clearedLocally})`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧹 [purge ${deleted}/${count}]`);
+}
+
+/**
+ * .clearmem — efface la mémoire IA de l'utilisateur auquel on RÉPOND.
+ *
+ * La mémoire IA (contexte de conversation) est stockée côté backend, par
+ * expéditeur. En répondant à un message de quelqu'un avec `.clearmem`, on
+ * supprime TOUT le contexte mémorisé pour cette personne : l'IA repart de
+ * zéro avec elle. Réservé au propriétaire (message depuis le compte lié).
+ */
+async function handleClearMemCommand(msg, remoteJid, sender) {
+  // Autorisation : seul le propriétaire (compte lié) peut effacer une mémoire
+  if (!msg.key.fromMe) {
+    return replyError(remoteJid, '🔒 Cette commande est réservée au propriétaire du bot.', msg);
+  }
+
+  // Cible : l'expéditeur du message CITÉ (participant en groupe, sinon jid)
+  const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+  const target = ctx.participant || ctx.remoteJid || '';
+
+  if (!quoted || !target) {
+    return replyError(remoteJid,
+      '🧠 *Commande .clearmem*\n'
+      + 'Efface la mémoire IA (contexte) de l\'utilisateur auquel tu réponds.\n\n'
+      + 'RÉPONDEZ à un message de la personne concernée avec `.clearmem`\n'
+      + 'pour que l\'IA oublie toute sa conversation précédente.', msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '🧠 Effacement de la mémoire…' }).catch(() => {});
+
+  let data;
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/ai/memory/clear`, { sender: target }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 30000,
+    });
+    data = res.data || {};
+  } catch (err) {
+    debugLog(`[clearmem] appel backend impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de joindre le service de mémoire. Réessayez.', msg);
+  }
+
+  if (!data.ok) {
+    debugLog(`[clearmem] refusé : ${data.error || 'inconnu'}`);
+    return replyError(remoteJid, `❌ ${data.error || 'Effacement impossible.'}`, msg);
+  }
+
+  const who = contactLabel(target);
+  const deleted = Number(data.deleted) || 0;
+  const lines = [
+    `🧠 *Mémoire effacée*`,
+    '',
+    `${deleted} entrée(s) supprimée(s) pour ${who}.`,
+    'L\'IA repart de zéro avec cette personne. 🤖✨',
+  ];
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[clearmem] ${deleted} entrées effacées pour ${target}`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧠 [mémoire effacée] ${who} (${deleted})`);
 }
 
 /**
