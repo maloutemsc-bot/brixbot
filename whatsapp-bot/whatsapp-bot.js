@@ -26,7 +26,10 @@ const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 
 const sharp = require('sharp');
-const ytdl = require('@distube/ytdl-core');
+// Téléchargement YouTube via yt-dlp (binaire Python) : ytdl-core ne peut plus
+// décrypter les URLs de flux de YouTube actuel ("Could not parse decipher").
+// yt-dlp est toujours à jour et gère vidéo ET audio sans clé API.
+const { execFile } = require('child_process');
 
 const {
   default: makeWASocket,
@@ -97,8 +100,37 @@ const TRANSCRIPT_FILE = path.join(__dirname, process.env.TRANSCRIPT_FILE || 'tra
 // Dossier temporaire pour les médias téléchargés (.sticker / .yt)
 const MEDIA_DIR = path.join(__dirname, 'media_cache');
 try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (_) { /* non bloquant */ }
-// Durée maximale d'une vidéo YouTube téléchargeable (.yt) : 60 minutes
-const YT_MAX_SECONDS = 3600;
+// Durées maximales pour .yt (vidéo) et .audio (audio seul). WhatsApp limite la
+// taille des vidéos (~60 Mo) : on limite donc la vidéo à 10 min (360p ≈ 3 Mo/min)
+// tandis que l'audio peut rester plus long.
+const YT_VIDEO_MAX_SECONDS = 600;
+const YT_AUDIO_MAX_SECONDS = 3600;
+const YT_MAX_BYTES = 60 * 1024 * 1024; // garde-fou taille fichier (env. limite WhatsApp)
+const YT_DOWNLOAD_TIMEOUT_MS = 300000; // 5 min max par téléchargement
+
+// Commande yt-dlp résolue au premier usage (exe ou python -m yt_dlp).
+let ytDlpCmd = null; // [commande, ...args] ou null si introuvable
+function resolveYtDlp() {
+  if (ytDlpCmd) return ytDlpCmd;
+  if (process.env.YTDLP_PATH) {
+    ytDlpCmd = [process.env.YTDLP_PATH];
+    return ytDlpCmd;
+  }
+  // yt-dlp dans le PATH (installation pip globale) — souvent yt-dlp.exe
+  ytDlpCmd = ['yt-dlp'];
+  return ytDlpCmd;
+}
+
+/** Supprime les fichiers yt-<préfixe>* restés dans media_cache (partiels/échecs). */
+function cleanupYtPrefix(prefix) {
+  try {
+    for (const f of fs.readdirSync(MEDIA_DIR)) {
+      if (f.startsWith(prefix)) {
+        fs.unlink(path.join(MEDIA_DIR, f), () => {});
+      }
+    }
+  } catch (_) { /* non bloquant */ }
+}
 
 // Cache des données de langue pour l'OCR (.ocr — tesseract.js).
 // Les données fra.traineddata sont téléchargées une seule fois puis réutilisées.
@@ -354,6 +386,11 @@ async function startBot() {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
+      // Traite TOUS les types d'historique (INITIAL_BOOTSTRAP, RECENT, FULL,
+      // ON_DEMAND). Par défaut Baileys ignore le FULL history : le téléphone le
+      // renvoie pourtant au démarrage → on le collecte pour .clear (sans ça, la
+      // purge ne voyait que la session courante, soit ~8 messages).
+      shouldSyncHistoryMessage: () => true,
     });
 
     // Sauvegarde automatique des identifiants de session
@@ -420,6 +457,26 @@ async function startBot() {
           console.log('🔄 Reconnexion automatique dans 3 secondes…');
           scheduleReconnect(3000);
         }
+      }
+    });
+
+    // Historique de messages reçu au démarrage (ou via on-demand) : on collecte
+    // les clés EN CONTINU pour que .clear puisse purger bien plus que la
+    // session courante. WhatsApp envoie l'historique au moment de la connexion
+    // (pas pendant la commande) : un écouteur temporaire dans .clear ne voyait
+    // presque rien → d'où le "8 messages" au lieu de l'historique complet.
+    sock.ev.on('messaging-history.set', (data) => {
+      const msgs = (data && Array.isArray(data.messages)) ? data.messages : [];
+      for (const m of msgs) {
+        const k = m && m.key;
+        if (!k || !k.remoteJid || !k.id || k.remoteJid === 'status@broadcast') continue;
+        if (!historyChatKeys[k.remoteJid]) historyChatKeys[k.remoteJid] = [];
+        // Dédup par id : on remplace s'il existe déjà, sinon on ajoute
+        const arr = historyChatKeys[k.remoteJid];
+        const idx = arr.findIndex((x) => x.id === k.id);
+        const entry = { ...k, messageTimestamp: m.messageTimestamp };
+        if (idx !== -1) arr[idx] = entry;
+        else if (arr.length < CLEAR_MAX) arr.push(entry);
       }
     });
 
@@ -2428,7 +2485,10 @@ const afkNotified = {}; // "groupe|membre" → timestamp
 // Clés des messages vus par le bot (en mémoire, par conversation) :
 // la commande .clear les supprime pour tout le monde. WhatsApp limite la
 // suppression aux messages de moins de ~2 jours.
-const chatKeys = {}; // { [remoteJid]: [WAMessageKey] }
+const chatKeys = {}; // { [remoteJid]: [WAMessageKey] } — messages vus depuis le démarrage
+// { [remoteJid]: [WAMessageKey] } — clés collectées depuis l'historique envoyé
+// par le téléphone à la connexion (messaging-history.set). Rempli EN CONTINU.
+const historyChatKeys = {};
 const CLEAR_MAX = 1000; // nombre max de messages chargés/supprimés en une commande
 // Historique à la demande (History Sync On Demand) : le téléphone renvoie les
 // vieux messages par lots, ce qui permet de supprimer bien plus que la session.
@@ -2545,8 +2605,14 @@ async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
   // 1) Historique à la demande : les vieux messages du chat (paginé)
   const historyKeys = await loadChatHistoryKeys(remoteJid, msg.key, CLEAR_MAX, CLEAR_HISTORY_TIMEOUT);
 
-  // 2) Fusion avec les messages vus depuis le démarrage du bot
+  // 2) Fusion des 3 sources (dédup par id) :
+  //    - historyChatKeys : l'historique collecté en continu à la connexion
+  //    - chatKeys         : les messages vus depuis le démarrage du bot
+  //    - historyKeys      : ce que l'on-demand a renvoyé (souvent vide)
   const allKeys = new Map();
+  for (const k of (historyChatKeys[remoteJid] || [])) {
+    if (k && k.id) allKeys.set(k.id, k);
+  }
   for (const k of (chatKeys[remoteJid] || [])) {
     if (k && k.id) allKeys.set(k.id, k);
   }
@@ -2557,8 +2623,8 @@ async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
 
   if (!keys.length) {
     return replyError(remoteJid,
-      "🧹 Aucun message à purger pour le moment.\n"
-      + "_Le téléphone n'a pas renvoyé d'historique (hors ligne ?) et aucun message récent n'a été vu._", msg);
+      "🧹 Aucun message à purger.\n"
+      + "_L'historique n'a pas encore été reçu (le téléphone doit être connecté et synchronisé) ou la conversation est vide._", msg);
   }
 
   const count = keys.length;
@@ -2599,9 +2665,10 @@ async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
     }
   }
 
-  // On retire de la liste les messages traités
+  // On retire de la liste les messages traités (des deux collectes)
   const processed = new Set(keys.map((k) => k.id));
   chatKeys[remoteJid] = (chatKeys[remoteJid] || []).filter((k) => !processed.has(k.id));
+  historyChatKeys[remoteJid] = (historyChatKeys[remoteJid] || []).filter((k) => !processed.has(k.id));
 
   const lines = [`✅ ${deleted}/${count} messages supprimés pour tout le monde.`];
   if (clearedLocally) lines.push('🗑 La conversation a été vidée entièrement de ton côté.');
@@ -2676,87 +2743,167 @@ async function handleFunCommand(msg, remoteJid, sender, body) {
 }
 
 /**
- * .yt <url> — télécharge l'audio d'une vidéo YouTube et l'envoie dans le chat.
- * Le fichier est nettoyé du dossier temporaire après l'envoi.
+ * .yt <url>    — télécharge la VIDÉO YouTube et l'envoie dans le chat.
+ * .audio <url> — télécharge uniquement l'AUDIO de la vidéo.
+ *
+ * Utilise yt-dlp (binaire externe, toujours à jour face à YouTube ; ytdl-core
+ * ne sait plus décrypter les flux actuels). Sans ffmpeg, la vidéo est prise
+ * dans un format progressif mp4 (360p/720p) qui contient déjà l'audio : aucune
+ * fusion nécessaire. Le fichier temporaire est nettoyé après l'envoi.
  */
 async function handleYtCommand(msg, remoteJid, body) {
+  const isVideo = /^\.yt\b/i.test(body);
   const url = body.replace(/^\.(?:yt|audio)\b/i, '').trim();
 
-  if (!url) {
+  if (!url || !/^https?:\/\//i.test(url)) {
     return replyError(remoteJid,
-      '🎵 *Commande .yt*\n'
-      + 'Utilisation : `.yt <lien YouTube>`\n'
-      + 'Exemple : `.yt https://youtu.be/xxxx`', msg);
+      (isVideo
+        ? '🎬 *Commande .yt*\nUtilisation : `.yt <lien YouTube>`\nExemple : `.yt https://youtu.be/xxxx`\n\n💡 Pour l\'audio seul, utilisez `.audio <lien>`.'
+        : '🎵 *Commande .audio*\nUtilisation : `.audio <lien YouTube>`\nExemple : `.audio https://youtu.be/xxxx`\n\n💡 Pour la vidéo, utilisez `.yt <lien>`.'), msg);
   }
-  if (!ytdl.validateURL(url)) {
+
+  // Vérification rapide : le lien doit ressembler à une vidéo YouTube
+  if (!/(youtube\.com|youtu\.be)/i.test(url)) {
     return replyError(remoteJid, '❌ Lien YouTube invalide. Collez l\'URL complète d\'une vidéo.', msg);
   }
 
-  let info;
+  const cmd = resolveYtDlp();
+  if (!cmd) {
+    return replyError(remoteJid, '❌ yt-dlp n\'est pas installé. Installez-le (pip install yt-dlp) puis relancez.', msg);
+  }
+
+  // 1) Lecture des infos (titre + durée) via yt-dlp --dump-json
+  let info = null;
   try {
-    info = await ytdl.getInfo(url);
+    const out = await runYtDlp(['--dump-json', '--no-playlist', '--no-warnings', url]);
+    info = JSON.parse(out.split('\n')[0]);
   } catch (err) {
     debugLog(`[yt] infos indisponibles : ${err.message}`);
-    return replyError(remoteJid, '❌ Impossible de lire cette vidéo (privée ou supprimée ?).', msg);
+    return replyError(remoteJid, '❌ Impossible de lire cette vidéo (privée, supprimée ou indisponible ?).', msg);
   }
 
-  const duration = Number(info.videoDetails.lengthSeconds) || 0;
-  if (duration > YT_MAX_SECONDS) {
+  const duration = Number(info?.duration) || 0;
+  const maxSeconds = isVideo ? YT_VIDEO_MAX_SECONDS : YT_AUDIO_MAX_SECONDS;
+  if (duration > maxSeconds) {
     return replyError(remoteJid,
-      `⏱️ Vidéo trop longue (${Math.round(duration / 60)} min). Maximum : ${Math.round(YT_MAX_SECONDS / 60)} min.`, msg);
+      `⏱️ ${isVideo ? 'Vidéo' : 'Audio'} trop long${isVideo ? 'ue' : ''} (${Math.round(duration / 60)} min). Maximum : ${Math.round(maxSeconds / 60)} min.`, msg);
   }
 
-  const title = (info.videoDetails.title || 'audio').slice(0, 80);
-  const format = ytdl.chooseFormat(info.formats, { filter: 'audioonly', quality: 'lowestaudio' });
-  const container = (format?.container || 'webm').toLowerCase();
-  const ext = (container === 'm4a' || container === 'mp4') ? 'm4a'
-    : (container === 'mp3' ? 'mp3' : 'webm');
-  const mimetype = (container === 'm4a' || container === 'mp4') ? 'audio/mp4'
-    : (container === 'mp3' ? 'audio/mpeg' : 'audio/ogg; codecs=opus');
-  const filePath = path.join(MEDIA_DIR, `yt-${Date.now()}.${ext}`);
+  const title = String(info?.title || (isVideo ? 'video' : 'audio')).slice(0, 80);
+  // Nom de fichier sûr (sans caractères invalides) et préfixe pour retrouver
+  // le fichier réel après le téléchargement (yt-dlp choisit l'extension).
+  const safeTitle = title.replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'fichier';
+  const filePrefix = `yt-${Date.now()}`;
 
-  // Message de statut pendant le téléchargement (peut prendre quelques secondes)
+  // Message de statut pendant le téléchargement
   if (sock) {
     sock.sendMessage(remoteJid, {
-      text: '⏳ Téléchargement de l\'audio… (quelques secondes)',
+      text: isVideo
+        ? `🎬 Téléchargement de la vidéo… (${Math.round(duration / 60)} min, ça peut prendre un moment)`
+        : '🎵 Téléchargement de l\'audio… (quelques secondes)',
     }).catch(() => {});
   }
 
+  // 2) Téléchargement réel
+  // Vidéo : format PROGRESSIF mp4 (vidéo+audio déjà combinés, pas de ffmpeg).
+  //   On préfère 720p (22) puis 360p (18), sinon le meilleur mp4 AVEC audio
+  //   ([acodec!=none][vcodec!=none]) — sans ça, yt-dlp peut choisir un flux
+  //   vidéo SANS audio (ex: 137/299) → vidéo muette envoyée sur WhatsApp.
+  // Audio : m4a si possible (meilleure compatibilité WhatsApp), sinon webm.
+  const formatSel = isVideo
+    ? '22/18/best[ext=mp4][acodec!=none][vcodec!=none]'
+    : 'bestaudio[ext=m4a]/bestaudio';
   try {
-    const stream = ytdl(url, { format });
-    await new Promise((resolve, reject) => {
-      const write = fs.createWriteStream(filePath);
-      // Garde-fou : le téléchargement ne doit jamais rester bloqué
-      const timer = setTimeout(() => {
-        stream.destroy();
-        reject(new Error('timeout de téléchargement (120 s)'));
-      }, 120000);
-      stream.pipe(write);
-      stream.on('error', (err) => { clearTimeout(timer); reject(err); });
-      write.on('finish', () => { clearTimeout(timer); resolve(); });
-      write.on('error', (err) => { clearTimeout(timer); reject(err); });
-    });
+    await runYtDlp([
+      '--no-playlist', '--no-warnings',
+      '-f', formatSel,
+      '-o', path.join(MEDIA_DIR, filePrefix + '.%(ext)s'),
+      '--no-part',
+      url,
+    ]);
   } catch (err) {
     debugLog(`[yt] téléchargement impossible : ${err.message}`);
-    return replyError(remoteJid, '❌ Échec du téléchargement audio. Réessayez plus tard.', msg);
+    // Nettoyage des fichiers partiels éventuels (timeout / interruption)
+    cleanupYtPrefix(filePrefix);
+    return replyError(remoteJid,
+      `❌ Échec du téléchargement ${isVideo ? 'vidéo' : 'audio'}. Réessayez plus tard.`, msg);
   }
 
+  // Retrouve le fichier réellement créé (extension choisie par yt-dlp)
+  let filePath = null;
+  let ext = 'mp4';
   try {
-    await sock.sendMessage(remoteJid, {
-      audio: { url: filePath },
-      mimetype,
-      fileName: `${title}.${ext}`,
-      ptt: false, // audio normal (pas une note vocale)
-    }, { quoted: msg });
-    debugLog(`[yt] audio envoyé : ${title}`);
-    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎵 [audio envoyé] ${title}`);
+    const candidates = fs.readdirSync(MEDIA_DIR)
+      .filter((f) => f.startsWith(filePrefix))
+      .map((f) => path.join(MEDIA_DIR, f));
+    filePath = candidates[0] || null;
+    if (filePath) ext = path.extname(filePath).slice(1).toLowerCase();
+  } catch (_) { /* dossier illisible */ }
+
+  if (!filePath) {
+    return replyError(remoteJid, `❌ ${isVideo ? 'Vidéo' : 'Audio'} introuvable après le téléchargement.`, msg);
+  }
+
+  // Garde-fou : fichier trop gros pour WhatsApp
+  let size = 0;
+  try { size = fs.statSync(filePath).size; } catch (_) { /* fichier introuvable */ }
+  if (size > YT_MAX_BYTES) {
+    debugLog(`[yt] fichier trop gros : ${Math.round(size / 1048576)} Mo`);
+    setTimeout(() => fs.unlink(filePath, () => {}), 5000);
+    return replyError(remoteJid,
+      `❌ Fichier trop gros pour WhatsApp (${Math.round(size / 1048576)} Mo > 60 Mo). Choisissez une vidéo plus courte.`, msg);
+  }
+
+  const mimetype = isVideo
+    ? 'video/mp4'
+    : (ext === 'm4a' || ext === 'mp4') ? 'audio/mp4'
+      : (ext === 'webm') ? 'audio/webm'
+        : 'audio/mpeg';
+
+  try {
+    if (isVideo) {
+      await sock.sendMessage(remoteJid, {
+        video: { url: filePath },
+        mimetype,
+        caption: `🎬 ${title}`,
+        fileName: `${safeTitle}.mp4`,
+      }, { quoted: msg });
+    } else {
+      await sock.sendMessage(remoteJid, {
+        audio: { url: filePath },
+        mimetype,
+        fileName: `${safeTitle}.${ext}`,
+        ptt: false, // audio normal (pas une note vocale)
+      }, { quoted: msg });
+    }
+    debugLog(`[yt] ${isVideo ? 'vidéo' : 'audio'} envoyé : ${title} (${Math.round(size / 1048576)} Mo, .${ext})`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${isVideo ? '🎬 [vidéo envoyée]' : '🎵 [audio envoyé]'} ${title}`);
   } catch (err) {
     debugLog(`[yt] envoi impossible : ${err.message}`);
-    return replyError(remoteJid, '❌ Envoi de l\'audio impossible.', msg);
+    return replyError(remoteJid, `❌ Envoi de la ${isVideo ? 'vidéo' : 'l\'audio'} impossible.`, msg);
   } finally {
     // Nettoyage différé du fichier temporaire
     setTimeout(() => fs.unlink(filePath, () => {}), 60000);
   }
+}
+
+/** Exécute yt-dlp et résout avec stdout (rejette en cas d'erreur ou de timeout). */
+function runYtDlp(args) {
+  return new Promise((resolve, reject) => {
+    const cmd = resolveYtDlp();
+    const child = execFile(cmd[0], [...cmd.slice(1), ...args], {
+      timeout: YT_DOWNLOAD_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error((stderr || err.message || '').split('\n').filter(Boolean).slice(-2).join(' | ')));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
 }
 
 /**

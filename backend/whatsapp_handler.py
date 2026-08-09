@@ -94,7 +94,7 @@ HELP_TEXT = (
     "• `.blacklist` / `.unblacklist` — silence de l'IA ici (propriétaire)\n"
     "• `.ia` — gestion de l'IA dans cette conversation (propriétaire)\n"
     "🖼 Envoyez une photo avec la légende `.sticker` pour la transformer en sticker.\n"
-    "🎵 `.yt lien` — télécharge l'audio d'une vidéo YouTube.\n"
+    "🎬 `.yt lien` — télécharge la VIDÉO YouTube (.audio lien → audio seul).\n"
     "🎤 `.transcript` (réponse à un vocal) — transcrit la note vocale.\n"
     "📥 `.extract` (réponse à une image/vocal) — renvoie le média dans le chat.\n"
     "🔍 `.meta` (réponse à un message) — affiche ses métadonnées techniques.\n"

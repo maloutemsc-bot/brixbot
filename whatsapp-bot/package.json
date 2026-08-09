@@ -10,7 +10,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@distube/ytdl-core": "^4.15.5",
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "axios": "^1.7.9",
     "dotenv": "^16.4.7",
