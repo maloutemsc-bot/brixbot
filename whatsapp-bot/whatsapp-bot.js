@@ -3113,7 +3113,7 @@ async function handleTranscriptCommand(msg, remoteJid) {
     return replyError(remoteJid,
       '🎤 *Commande .transcript*\n'
       + 'RÉPONDEZ à une note vocale avec `.transcript`\n'
-      + 'pour obtenir sa transcription en texte.', msg);
+      + 'pour obtenir sa transcription en texte, suivie d\'un résumé IA.', msg);
   }
 
   // Message de statut pendant la transcription
@@ -3155,8 +3155,38 @@ async function handleTranscriptCommand(msg, remoteJid) {
   const text = data.text.trim();
   debugLog(`[transcript] transcrit (${data.duration_ms || 0} ms) : ${text.slice(0, 120)}`);
 
+  // 1) La transcription d'abord (message séparé)
   await sendChunks(remoteJid, `🎤 *Transcription*\n\n${text}`, msg);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎤 [transcription demandée] ${text}`);
+
+  // 2) Puis le résumé IA du contenu (message séparé). Une panne du résumé ne
+  //    doit jamais effacer la transcription déjà envoyée : on journalise et on
+  //    prévient discrètement.
+  if (sock) sock.sendMessage(remoteJid, { text: '📝 Résumé en cours…' }).catch(() => {});
+
+  let rdata;
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/resume`, { text }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000,
+    });
+    rdata = res.data || {};
+  } catch (err) {
+    debugLog(`[transcript] résumé : appel backend impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Transcription envoyée, mais résumé indisponible (backend injoignable).', msg);
+  }
+
+  if (!rdata.ok || !rdata.summary) {
+    debugLog(`[transcript] résumé refusé : ${rdata.error || 'inconnu'}`);
+    return replyError(remoteJid, `❌ Transcription envoyée, mais résumé impossible : ${rdata.error || 'erreur inconnue'}.`, msg);
+  }
+
+  const lines = ['📝 *Résumé de la note vocale*', '', rdata.summary.trim(), ''];
+  const secs = Math.round((rdata.duration_ms || 0) / 1000);
+  lines.push(`_via ${rdata.model || 'IA'}` + (secs > 0 ? ` · ${secs} s_` : '_'));
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[transcript] résumé envoyé (${rdata.summary.length} caractères)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📝 [résumé du vocal] ${rdata.summary.slice(0, 60)}`);
 }
 
 /**
