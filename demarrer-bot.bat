@@ -27,6 +27,18 @@ goto deps_ok
 :venv_ok
 echo [1/4] Environnement Python pret.
 
+rem pinscrape (Pinterest, priorite de .pin) SANS opencv (~350 Mo) :
+rem search() n'en a pas besoin, le service pinscrape_service.py le shime.
+rem Echec = .pin garde DuckDuckGo/Wikimedia (non bloquant).
+rem Installe seulement si absent (gain de temps au demarrage).
+.venv\Scripts\python.exe -c "import pinscrape" >nul 2>&1
+if errorlevel 1 (
+  .venv\Scripts\python.exe -m pip install --no-deps pinscrape==5.1.0 >nul 2>&1
+  if not errorlevel 1 (echo [OK] pinscrape installe ^(Pinterest pour .pin^)) else (echo [i] pinscrape non installe - .pin utilisera DuckDuckGo/Wikimedia)
+) else (
+  echo [OK] pinscrape deja installe
+)
+
 :deps_ok
 
 rem ---------- 2. Fichiers .env ----------

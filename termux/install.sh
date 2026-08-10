@@ -9,6 +9,10 @@ cd "$(dirname "$0")/.."
 echo "[1/3] Dépendances Python (Flask, SQLAlchemy, requests…)…"
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
 python -m pip install -r backend/requirements.txt
+# pinscrape (Pinterest, priorité de .pin) SANS opencv (~350 Mo) : search()
+# n'en a pas besoin, le service le shime. Échec = .pin garde DuckDuckGo/Wikimedia.
+echo "  → pinscrape (Pinterest pour .pin, léger sans opencv)…"
+python -m pip install --no-deps pinscrape==5.1.0 2>/dev/null || echo "  ⚠️ pinscrape non installé (repli automatique sur DuckDuckGo/Wikimedia)"
 
 echo "[2/3] Dépendances Node (Baileys, Express, axios…)…"
 cd whatsapp-bot

@@ -5,3 +5,13 @@ Flask-Limiter==3.8.0
 requests==2.32.3
 python-dotenv==1.0.1
 gunicorn==22.0.0
+
+# --- Dépendances LÉGÈRES de pinscrape (Pinterest, priorité de .pin) ---
+# pinscrape lui-même est installé SANS ses dépendances lourdes (opencv-python
+# ~350 Mo, numpy) car elles ne servent qu'à download(), jamais à search() :
+# le service pinscrape_service.py fournit des stubs minimaux quand elles
+# manquent. L'installation de pinscrape --no-deps est faite par les scripts
+# (demarrer-bot.bat, termux/install.sh) pour éviter opencv sur Termux/Android.
+beautifulsoup4>=4.12
+pydotmap>=0.1.3
+pydantic>=2.9

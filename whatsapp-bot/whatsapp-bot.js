@@ -1828,8 +1828,8 @@ async function searchWikiImages(query, limit) {
  * Usage :
  *   .pin chat          → 5 images de chats
  *   .pin 3 chat mignon → 3 images (nombre optionnel, 1 à 10)
- * Source : DuckDuckGo Images (varié), secours Wikimedia Commons (fiable).
- * 100 % gratuit, sans clé API.
+ * Sources (dans l'ordre) : Pinterest via pinscrape (backend), puis DuckDuckGo
+ * Images (varié), puis Wikimedia Commons (fiable). 100 % gratuit, sans clé API.
  */
 async function handlePinCommand(msg, remoteJid, body) {
   let rest = body.replace(/^\.pin\s*/i, '').trim();
@@ -1861,7 +1861,7 @@ async function handlePinCommand(msg, remoteJid, body) {
       + '• `.pin chat` — 5 images de chats\n'
       + '• `.pin 3 chat mignon` — 3 images (nombre optionnel, 1 à 10)\n'
       + '• `.pin nsfw chat` — désactive le filtre de sécurité 🔞 (adultes uniquement)\n\n'
-      + 'Sources : DuckDuckGo Images · Wikimedia Commons.', msg);
+      + 'Sources : Pinterest (pinscrape) · DuckDuckGo Images · Wikimedia Commons.', msg);
   }
 
   if (sock) {
@@ -1872,23 +1872,52 @@ async function handlePinCommand(msg, remoteJid, body) {
     }).catch(() => {});
   }
 
-  // 1) Recherche des URLs : DuckDuckGo d'abord, Wikimedia en secours.
+  // 1) Recherche des URLs — Pinterest (pinscrape) EN PRIORITÉ via le backend,
+  //    puis DuckDuckGo, puis Wikimedia en secours.
   // On demande PLUS d'URLs que le nombre voulu : certains liens sont morts ou
   // renvoient du HTML, la boucle d'envoi en ignorera et on doit en avoir assez
   // pour atteindre `count` images effectives.
   const fetchCount = Math.min(count * 3, 30);
   let wikiTried = false; // Wikimedia est tenté au plus une fois (secours ou complément)
   let urls = [];
-  try {
-    urls = await searchDdgImages(query, fetchCount, nsfw);
-  } catch (err) {
-    debugLog(`[pin] DuckDuckGo indisponible : ${err.message}`);
+
+  // 1a) Pinterest (pinscrape) — priorité. Le backend renvoie les URLs Pinterest
+  //     (ou une liste vide si pinscrape absent / échec / timeout).
+  //     En mode NSFW on saute Pinterest : ses résultats sont toujours "sûrs"
+  //     et n'ont rien à faire dans une recherche adulte.
+  if (!nsfw) {
+    try {
+      const pinRes = await axios.post(`${FLASK_URL}/api/pin/search`, {
+        query,
+        count: fetchCount,
+      }, {
+        headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+        timeout: 35000,
+      });
+      if (pinRes.data?.ok && Array.isArray(pinRes.data.urls) && pinRes.data.urls.length) {
+        urls = pinRes.data.urls;
+        debugLog(`[pin] Pinterest (pinscrape) : ${urls.length} URL(s)`);
+      } else {
+        debugLog(`[pin] pinscrape indisponible ou vide (source=${pinRes.data?.source || '?'})`);
+      }
+    } catch (err) {
+      debugLog(`[pin] Pinterest injoignable : ${err.message}`);
+    }
+  } else {
+    wikiTried = true; // mode NSFW : jamais de Wikimedia (voir plus bas)
   }
-  // En mode NSFW, on ne mélange JAMAIS avec Wikimedia : ses images sont toujours
-  // "sûres" et n'ont rien à faire dans une recherche adulte.
-  if (nsfw) wikiTried = true;
+
+  // 1b) Secours : DuckDuckGo si Pinterest n'a rien donné
+  if (!urls.length) {
+    try {
+      urls = await searchDdgImages(query, fetchCount, nsfw);
+      if (urls.length) debugLog(`[pin] DuckDuckGo utilisé (${urls.length} URL(s))`);
+    } catch (err) {
+      debugLog(`[pin] DuckDuckGo indisponible : ${err.message}`);
+    }
+  }
+  // 1c) Secours final : Wikimedia (mode normal uniquement)
   if (!urls.length && !nsfw) {
-    // Secours direct : DuckDuckGo n'a rien renvoyé (mode normal uniquement)
     try {
       urls = await searchWikiImages(query, fetchCount);
       wikiTried = true;

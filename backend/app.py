@@ -36,6 +36,7 @@ from flask_limiter.util import get_remote_address
 
 import ai_service
 import brixhub_service
+import pinscrape_service
 import whatsapp_handler
 from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, init_db, utc_now_iso
 
@@ -637,6 +638,40 @@ def stats_chart():
             "error": CommandLog.query.filter_by(status="error").count(),
             "ignored": CommandLog.query.filter_by(status="ignored").count(),
         },
+    })
+
+
+# --------------------------------------------------------------------------- #
+#  Pinterest (pinscrape) — priorité de la commande .pin
+# --------------------------------------------------------------------------- #
+@app.route("/api/pin/search", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def pin_search():
+    """
+    Recherche d'images Pinterest via pinscrape (priorité .pin).
+
+    Appelé par le bot Node.js en PREMIER pour la commande .pin. Si Pinterest
+    ne renvoie rien (ou si pinscrape est absent), le bot retombe sur ses
+    méthodes DuckDuckGo / Wikimedia — jamais d'échec bloquant.
+    """
+    data = request.get_json(silent=True) or {}
+    query = str(data.get("query", "") or "").strip()
+    try:
+        count = max(1, min(int(data.get("count", 10)), 30))
+    except (TypeError, ValueError):
+        count = 10
+    if not query:
+        return jsonify({"ok": False, "error": "Requête vide."}), 400
+    if len(query) > 200:
+        return jsonify({"ok": False, "error": "Requête trop longue."}), 400
+
+    urls = pinscrape_service.search(query, count)
+    return jsonify({
+        "ok": True,
+        "source": "pinscrape" if urls else "unavailable",
+        "urls": urls,
+        "pinscrape_available": pinscrape_service.available(),
     })
 
 
