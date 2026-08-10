@@ -66,8 +66,16 @@ Ouvrez Termux et copiez-collez :
 
 ```bash
 pkg update && pkg upgrade -y
-pkg install -y python nodejs-lts git nano termux-api termux-boot yt-dlp curl
+pkg install -y python nodejs-lts git nano termux-api yt-dlp curl
 ```
+
+> ⚠️ **N'installez PAS `termux-boot` avec `pkg`** : ce paquet n'existe pas dans
+> les dépôts Termux (vous verriez « Unable to locate package termux-boot »).
+> **Termux:Boot est une application Android** — elle s'installe depuis F-Droid,
+> exactement comme Termux et Termux:API (étape 1). Vérifiez qu'elle est bien
+> installée sur le téléphone avant de continuer.
+>
+> `termux-api` (la commande `termux-wake-lock`…), lui, est bien un paquet `pkg`.
 
 Puis récupérez le projet :
 
@@ -187,6 +195,7 @@ Vous devez voir les ports **5000** et **3000** à l'écoute.
 
 | Problème | Solution |
 |---|---|
+| `pkg install … termux-boot` → « Unable to locate package » | Normal : **Termux:Boot est une application F-Droid**, pas un paquet `pkg`. Installez-la depuis F-Droid (étape 1). |
 | `.sticker` ne marche pas | Normal sur Android (sharp indisponible). Tout le reste fonctionne. |
 | Le bot ne se reconnecte pas après coupure Wi-Fi | Baileys se reconnecte tout seul ; vérifiez avec `bash termux/status.sh`. |
 | Téléphone endormi, plus de réponses | `termux-wake-lock` + désactivez l'optimisation de batterie de Termux. |
