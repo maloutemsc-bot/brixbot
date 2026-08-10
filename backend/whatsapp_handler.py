@@ -23,7 +23,8 @@ import time
 import ai_service
 import brixhub_service
 import tools_service
-from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, utc_now_iso
+from database import (AIConfig, AILog, AIMemory, BotConfig, CommandLog,
+                      DEFAULT_SYSTEM_PROMPT, db, utc_now_iso)
 
 # Message d'aide affiché pour une commande .search incomplète
 USAGE_SEARCH = (
@@ -669,8 +670,22 @@ def _handle_ask(body, remote_jid="", sender="", is_group=False, start=None):
                      chat=remote_jid, sender=sender)
         return {"reply": "❌ Question trop longue (4000 caractères maximum)."}
 
+    # Prompt système : on reprend celui du panneau (ou le défaut) et on ajoute
+    # une règle de langue pour que l'IA réponde dans la langue de la question.
+    # Sans ça, "répond toujours en français" du prompt par défaut écraserait
+    # la langue de l'utilisateur (une question en anglais → réponse en français).
+    ai_cfg = AIConfig.get()
+    base_prompt = (ai_cfg.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
+    ask_prompt = base_prompt + (
+        "\n\nRègle importante pour la commande .ask : réponds TOUJOURS dans la "
+        "langue de la question posée par l'utilisateur (anglais si la question "
+        "est en anglais, espagnol si elle est en espagnol, etc.). "
+        "Ne réponds en français que si la question est en français."
+    )
+
     # Réponse complète via le moteur IA (mémoire + journalisation incluses)
-    return _handle_ai(question, sender, remote_jid, is_group, log_cmd=".ask")
+    return _handle_ai(question, sender, remote_jid, is_group,
+                      log_cmd=".ask", system_prompt=ask_prompt)
 
 
 # --------------------------------------------------------------------------- #
@@ -1002,7 +1017,7 @@ def _prune_memory(sender, exchanges):
         db.session.commit()
 
 
-def _handle_ai(body, sender, remote_jid, is_group, log_cmd="IA"):
+def _handle_ai(body, sender, remote_jid, is_group, log_cmd="IA", system_prompt=None):
     """Répond automatiquement avec GROQ, journalise et met à jour la mémoire."""
     start = time.perf_counter()
     ai_cfg = AIConfig.get()
@@ -1013,7 +1028,9 @@ def _handle_ai(body, sender, remote_jid, is_group, log_cmd="IA"):
         history = _load_memory(sender, ai_cfg.memory_exchanges)
 
     try:
-        reply, model, tokens, duration_ms = ai_service.chat(body, history=history)
+        reply, model, tokens, duration_ms = ai_service.chat(
+            body, history=history, system_prompt=system_prompt,
+        )
         elapsed = (time.perf_counter() - start) / 1000.0
 
         _log_command(log_cmd, body[:500], 1, "success", "", elapsed, is_ai=True,
