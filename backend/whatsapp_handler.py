@@ -7,6 +7,8 @@ Priorité des messages :
   2. .blacklist / .unblacklist / .me / .stats → commandes propriétaire
   3. .search / .tel → recherche BrixHub (nom ou numéro)
   3b. .meteo / .traduis / .devise → outils gratuits (sans clé)
+  3c. .crypto / .8ball / .blague / .horoscope → commandes surprises
+  3d. .ask [question] → question à l'IA (tout le monde, clé GROQ requise)
   4. .ia (propriétaire) → gestion whitelist + liste noire
   5. IA automatique (si activée ET conversation autorisée) → GROQ
      (la liste noire est PRIORITAIRE : un chat banni est toujours muet)
@@ -66,6 +68,15 @@ USAGE_DEVISE = (
     "Devises supportées : EUR, USD, GBP, JPY, CHF, CAD, MAD…"
 )
 
+# Message d'aide affiché pour une commande .ask sans question
+USAGE_ASK = (
+    "❓ *Commande .ask*\n"
+    "Pose une question à l'IA, qui répond directement.\n\n"
+    "Utilisation : `.ask [question]`\n"
+    "Exemple : `.ask c'est quoi la capitale du Japon ?`\n\n"
+    "Accessible à tout le monde."
+)
+
 # Message par défaut (réponse automatique sans IA)
 DEFAULT_RESPONSE = (
     "👋 Bonjour ! Je suis un assistant de recherche.\n"
@@ -100,6 +111,7 @@ HELP_TEXT = (
     "🔍 `.meta` (réponse à un message) — affiche ses métadonnées techniques.\n"
     "📦 `.json` (réponse à un message) — affiche le message en JSON brut.\n"
     "📝 `.resume` (réponse à un message) — résume le message avec l'IA.\n"
+    "❓ `.ask question` — pose une question à l'IA, tout le monde peut l'utiliser.\n"
     "🆔 `.id` — affiche les identifiants de la conversation.\n"
     "🗣 `.tts texte` — transforme un texte en note vocale.\n"
     "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"
@@ -371,6 +383,13 @@ def handle_message(body, sender="", remote_jid="", is_group=False, voice=False):
     if re.match(r"^\.(?:horoscope|astro)(?:\s|$)", body, re.IGNORECASE):
         return _handle_horoscope(body, remote_jid, sender, is_group, start)
 
+    # 3d) Commande .ask : poser une question à l'IA (accessible à TOUT le monde)
+    #     Fonctionne comme .resume / .correct : commande explicite, seule la
+    #     clé GROQ est requise (l'interrupteur "IA auto" n'a pas besoin d'être
+    #     allumé). Réutilise le moteur IA complet (mémoire + logs).
+    if re.match(r"^\.ask(?:\s|$)", body, re.IGNORECASE):
+        return _handle_ask(body, remote_jid, sender, is_group, start)
+
     # 4) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
         if not os.environ.get("OWNER_NUMBER", "").strip():
@@ -623,6 +642,35 @@ def _handle_horoscope(body, remote_jid="", sender="", is_group=False, start=None
         _log_command(".horoscope", signe[:200], 0, "error", exc.message,
                      time.perf_counter() - start, chat=remote_jid, sender=sender)
         return {"reply": f"❌ {exc.message}"}
+
+
+# --------------------------------------------------------------------------- #
+#  Commande .ask (question à l'IA — tout le monde)
+# --------------------------------------------------------------------------- #
+def _handle_ask(body, remote_jid="", sender="", is_group=False, start=None):
+    """
+    Pose une question à l'IA et renvoie la réponse (commande .ask).
+
+    Accessible à tout le monde : c'est une commande explicite, comme .resume
+    ou .correct — seule la clé GROQ est requise (l'IA automatique n'a pas
+    besoin d'être activée). Réutilise _handle_ai pour profiter de la mémoire
+    de conversation, des logs IA et de la gestion d'erreurs.
+    """
+    start = start if start is not None else time.perf_counter()
+    question = re.sub(r"^\.ask\s*", "", body, flags=re.IGNORECASE).strip()
+
+    if not question:
+        _log_command(".ask", "", 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": USAGE_ASK}
+    if len(question) > 4000:
+        _log_command(".ask", question[:500], 0, "error", "Question trop longue",
+                     time.perf_counter() - start, is_ai=True,
+                     chat=remote_jid, sender=sender)
+        return {"reply": "❌ Question trop longue (4000 caractères maximum)."}
+
+    # Réponse complète via le moteur IA (mémoire + journalisation incluses)
+    return _handle_ai(question, sender, remote_jid, is_group, log_cmd=".ask")
 
 
 # --------------------------------------------------------------------------- #
