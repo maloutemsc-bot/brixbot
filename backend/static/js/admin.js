@@ -323,6 +323,7 @@
       $('#ai-whitelist').value = config.ai_whitelist || '';
       $('#ai-blacklist').value = config.ai_blacklist || '';
       $('#ai-voice').checked = !!config.transcribe_voice;
+      $('#ai-ask-prompt').value = config.ask_prompt || '';
 
       await loadAILogs();
     } catch (err) { toast(err.message, 'error'); }
@@ -344,6 +345,7 @@
           ai_whitelist: $('#ai-whitelist').value,
           ai_blacklist: $('#ai-blacklist').value,
           transcribe_voice: $('#ai-voice').checked,
+          ask_prompt: $('#ai-ask-prompt').value.trim(),
         }),
       });
       toast('Configuration IA enregistrée ✅');

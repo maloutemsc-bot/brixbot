@@ -264,6 +264,14 @@
             <p class="hint">Instructions données à l'IA avant chaque message utilisateur.</p>
           </div>
 
+          <div class="form-row" style="grid-column: 1 / -1;">
+            <label for="ai-ask-prompt">❓ Prompt de la commande .ask</label>
+            <textarea id="ai-ask-prompt" rows="4" placeholder="Règle importante : réponds TOUJOURS dans la langue de la question…"></textarea>
+            <p class="hint">Instructions pour la commande <strong>.ask</strong> (question directe à l'IA, accessible à tous).<br>
+            Par défaut l'IA répond dans la langue de la question. Personnalisez librement : ton, style, format…<br>
+            <em>Vide = comportement par défaut (langue de la question).</em></p>
+          </div>
+
           <div class="form-row">
             <label for="ai-temp">Température : <span id="ai-temp-value">0.70</span></label>
             <input type="range" id="ai-temp" min="0" max="1" step="0.05" value="0.7">

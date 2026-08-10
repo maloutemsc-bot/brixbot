@@ -24,7 +24,7 @@ import ai_service
 import brixhub_service
 import tools_service
 from database import (AIConfig, AILog, AIMemory, BotConfig, CommandLog,
-                      DEFAULT_SYSTEM_PROMPT, db, utc_now_iso)
+                      DEFAULT_ASK_PROMPT, DEFAULT_SYSTEM_PROMPT, db, utc_now_iso)
 
 # Message d'aide affiché pour une commande .search incomplète
 USAGE_SEARCH = (
@@ -670,18 +670,12 @@ def _handle_ask(body, remote_jid="", sender="", is_group=False, start=None):
                      chat=remote_jid, sender=sender)
         return {"reply": "❌ Question trop longue (4000 caractères maximum)."}
 
-    # Prompt système : on reprend celui du panneau (ou le défaut) et on ajoute
-    # une règle de langue pour que l'IA réponde dans la langue de la question.
-    # Sans ça, "répond toujours en français" du prompt par défaut écraserait
-    # la langue de l'utilisateur (une question en anglais → réponse en français).
+    # Prompt système : le prompt dédié .ask du panneau (onglet IA) s'il est
+    # rempli ; sinon le prompt par défaut de .ask (règle de langue incluse).
+    # C'est exactement ce que le panneau affiche (to_dict résout vide → défaut) :
+    # aucun écart entre l'affichage et le comportement réel.
     ai_cfg = AIConfig.get()
-    base_prompt = (ai_cfg.system_prompt or "").strip() or DEFAULT_SYSTEM_PROMPT
-    ask_prompt = base_prompt + (
-        "\n\nRègle importante pour la commande .ask : réponds TOUJOURS dans la "
-        "langue de la question posée par l'utilisateur (anglais si la question "
-        "est en anglais, espagnol si elle est en espagnol, etc.). "
-        "Ne réponds en français que si la question est en français."
-    )
+    ask_prompt = (ai_cfg.ask_prompt or "").strip() or DEFAULT_ASK_PROMPT
 
     # Réponse complète via le moteur IA (mémoire + journalisation incluses)
     return _handle_ai(question, sender, remote_jid, is_group,

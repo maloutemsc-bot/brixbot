@@ -288,6 +288,8 @@ def save_ai_config():
         )
     if "transcribe_voice" in data:
         cfg.transcribe_voice = bool(data["transcribe_voice"])
+    if "ask_prompt" in data:
+        cfg.ask_prompt = str(data["ask_prompt"]).strip()
 
     db.session.commit()
     return jsonify({"ok": True, "config": cfg.to_dict()})

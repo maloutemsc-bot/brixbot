@@ -23,6 +23,18 @@ DEFAULT_SYSTEM_PROMPT = (
     "oriente-le vers la commande : .search nom [prénom] [ville]."
 )
 
+# Prompt par défaut de la commande .ask (question directe à l'IA).
+# L'IA répond dans la langue de la question (l'utilisateur peut le modifier
+# dans le panneau, onglet IA).
+DEFAULT_ASK_PROMPT = (
+    "Tu es un assistant WhatsApp intelligent et amical. "
+    "Règle importante pour la commande .ask : réponds TOUJOURS dans la langue "
+    "de la question posée par l'utilisateur (anglais si la question est en "
+    "anglais, espagnol si elle est en espagnol, etc.). Ne réponds en français "
+    "que si la question est en français. Sois naturel, concis et utile, "
+    "et utilise les émojis avec parcimonie."
+)
+
 
 def utc_now_iso():
     """Renvoie l'horodatage UTC actuel au format ISO (texte triable)."""
@@ -92,6 +104,9 @@ class AIConfig(db.Model):
     # Transcription des notes vocales : les vocaux sont transcrits (Whisper
     # via GROQ) puis l'IA répond au texte transcrit.
     transcribe_voice = db.Column(db.Boolean, default=False, nullable=False)
+    # Prompt dédié à la commande .ask (modifiable dans le panneau, onglet IA).
+    # Vide = l'ancien comportement (prompt système + règle de langue).
+    ask_prompt = db.Column(db.Text, default="", nullable=False)
 
     def to_dict(self):
         return {
@@ -107,6 +122,7 @@ class AIConfig(db.Model):
             "ai_whitelist": self.ai_whitelist or "",
             "ai_blacklist": self.ai_blacklist or "",
             "transcribe_voice": bool(self.transcribe_voice),
+            "ask_prompt": (self.ask_prompt or "").strip() or DEFAULT_ASK_PROMPT,
         }
 
     @staticmethod
@@ -232,6 +248,7 @@ def _ensure_columns(app):
             ("ai_whitelist", "TEXT DEFAULT ''"),
             ("ai_blacklist", "TEXT DEFAULT ''"),
             ("transcribe_voice", "BOOLEAN DEFAULT 0"),
+            ("ask_prompt", "TEXT DEFAULT ''"),
         ],
         "command_logs": [
             ("chat", "VARCHAR(100) DEFAULT ''"),
