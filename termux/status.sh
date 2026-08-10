@@ -34,12 +34,11 @@ echo ""
 
 echo ""
 echo "=== Pinterest (.pin) ==="
-# pinscrape est optionnel : le check passe par le service (stubs cv2/numpy).
-if python -c "import sys; sys.path.insert(0, 'backend'); import pinscrape_service as ps; assert ps.available()" >/dev/null 2>&1; then
-  echo "✅ Pinterest (pinscrape) : ACTIF — .pin l'utilisera en priorité"
+# Pinterest utilise l'API directe (pinterest_service.py) : requests seul suffit.
+if python -c "import sys; sys.path.insert(0, 'backend'); import pinterest_service as ps; assert ps.available()" >/dev/null 2>&1; then
+  echo "✅ Pinterest : ACTIF — .pin l'utilisera en priorité"
 else
   echo "⚠️  Pinterest : indisponible — .pin utilisera DuckDuckGo/Wikimedia"
-  echo "    → bash termux/update.sh puis réessayez (ou pkg install python-pydantic)"
 fi
 
 echo ""

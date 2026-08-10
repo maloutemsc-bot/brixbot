@@ -1828,7 +1828,7 @@ async function searchWikiImages(query, limit) {
  * Usage :
  *   .pin chat          → 5 images de chats
  *   .pin 3 chat mignon → 3 images (nombre optionnel, 1 à 10)
- * Sources (dans l'ordre) : Pinterest via pinscrape (backend), puis DuckDuckGo
+ * Sources (dans l'ordre) : Pinterest (backend, API directe), puis DuckDuckGo
  * Images (varié), puis Wikimedia Commons (fiable). 100 % gratuit, sans clé API.
  */
 async function handlePinCommand(msg, remoteJid, body) {
@@ -1861,7 +1861,7 @@ async function handlePinCommand(msg, remoteJid, body) {
       + '• `.pin chat` — 5 images de chats\n'
       + '• `.pin 3 chat mignon` — 3 images (nombre optionnel, 1 à 10)\n'
       + '• `.pin nsfw chat` — désactive le filtre de sécurité 🔞 (adultes uniquement)\n\n'
-      + 'Sources : Pinterest (pinscrape) · DuckDuckGo Images · Wikimedia Commons.', msg);
+      + 'Sources : Pinterest · DuckDuckGo Images · Wikimedia Commons.', msg);
   }
 
   if (sock) {
@@ -1872,7 +1872,7 @@ async function handlePinCommand(msg, remoteJid, body) {
     }).catch(() => {});
   }
 
-  // 1) Recherche des URLs — Pinterest (pinscrape) EN PRIORITÉ ABSOLUE via le
+  // 1) Recherche des URLs — Pinterest (API directe) EN PRIORITÉ ABSOLUE via le
   //    backend, puis DuckDuckGo, puis Wikimedia en dernier secours.
   //    Chaque URL est accompagnée de sa source ('Pinterest'|'DuckDuckGo'|
   //    'Wikimedia') affichée dans la légende de l'image.
@@ -1882,7 +1882,7 @@ async function handlePinCommand(msg, remoteJid, body) {
   const fetchCount = Math.min(count * 3, 30);
   let items = []; // [{url, source}] — une seule source à la fois (jamais mélangée)
 
-  // 1a) Pinterest (pinscrape) — priorité ABSOLUE : si Pinterest renvoie des
+  // 1a) Pinterest — priorité ABSOLUE : si Pinterest renvoie des
   //     URLs, on n'envoie QUE du Pinterest (aucun mélange avec d'autres sources,
   //     même si certains liens Pinterest sont morts).
   //     En mode NSFW on saute Pinterest : ses résultats sont toujours "sûrs"
@@ -1898,9 +1898,9 @@ async function handlePinCommand(msg, remoteJid, body) {
       });
       if (pinRes.data?.ok && Array.isArray(pinRes.data.urls) && pinRes.data.urls.length) {
         items = pinRes.data.urls.map((u) => ({ url: u, source: 'Pinterest' }));
-        debugLog(`[pin] Pinterest (pinscrape) : ${items.length} URL(s)`);
+        debugLog(`[pin] Pinterest : ${items.length} URL(s)`);
       } else {
-        debugLog(`[pin] pinscrape indisponible ou vide (source=${pinRes.data?.source || '?'})`);
+        debugLog(`[pin] Pinterest indisponible ou vide (source=${pinRes.data?.source || '?'})`);
       }
     } catch (err) {
       debugLog(`[pin] Pinterest injoignable : ${err.message}`);
