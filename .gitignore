@@ -40,3 +40,6 @@ whatsapp-bot/tessdata-cache/
 whatsapp-bot/mute-store.json
 whatsapp-bot/bot-store.json
 transcript.txt
+
+# Cache d'epoch de pinscrape (Pinterest, .pin) — créé dans le CWD
+/data/

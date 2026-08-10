@@ -79,6 +79,9 @@ except Exception as exc:  # ImportError ou échec interne : on garde le repli
 
 SEARCH_TIMEOUT = 25  # secondes max pour une recherche Pinterest
 
+# pinscrape crée un dossier "data/" (cache d'epoch) dans le répertoire courant.
+# Le dossier est créé à la racine du projet (CWD) et est gitignoré (data/).
+
 
 def available():
     """True si pinscrape est importable (recherche Pinterest possible)."""
