@@ -148,20 +148,42 @@ Une fois connecté : `✅ WhatsApp connecté`.
 
 ## 7. 🔁 Démarrage automatique au boot (la vraie solution 24/7)
 
-1. Copiez le script de boot dans le dossier attendu par Termux:Boot :
-   ```bash
-   cp termux/boot.sh ~/.termux/boot/brixbot.sh
-   ```
-2. **Redémarrez le téléphone.**
-3. Après le redémarrage, Termux:Boot exécute automatiquement le script :
-   le bot se connecte tout seul avec la session sauvegardée (pas de QR à
-   rescanner tant que la session reste valide).
+> ⚠️ **À faire impérativement AVANT tout le reste : ouvrez l'application
+> Termux:Boot UNE FOIS** (juste la lancer, puis la quitter). Sans ce premier
+> lancement, Android ne lui donne jamais l'autorisation de se déclencher au
+> boot — c'est la cause n°1 du « ça ne démarre pas ». Au premier lancement,
+> elle crée aussi le dossier `~/.termux/boot`.
 
-Pour vérifier que tout tourne :
+Puis, dans Termux :
+
 ```bash
-bash termux/status.sh
+# 1) Crée le dossier attendu par Termux:Boot (si pas déjà fait)
+mkdir -p ~/.termux/boot
+
+# 2) Copie le script de boot
+cp termux/boot.sh ~/.termux/boot/brixbot.sh
+
+# 3) Rend le script exécutable (sécurité)
+chmod +x ~/.termux/boot/brixbot.sh
+
+# 4) Vérifie qu'il est bien là
+ls -la ~/.termux/boot/
 ```
-Vous devez voir les ports **5000** et **3000** à l'écoute.
+
+**Redémarrez le téléphone**, puis vérifiez :
+
+```bash
+bash termux/status.sh          # ports 5000 et 3000 à l'écoute ?
+cat ~/brixbot-boot.log         # le journal du démarrage automatique
+```
+
+Le bot se connecte tout seul avec la session sauvegardée (pas de QR à
+rescanner tant que la session reste valide).
+
+> 💡 Le script `boot.sh` **trouve tout seul le dossier du projet** (peu importe
+> s'il s'appelle `brixbot`, `wtspbot`, etc.) et écrit un **journal détaillé**
+> dans `~/brixbot-boot.log` : si ça ne démarre pas, ce fichier vous dira
+> exactement où ça bloque.
 
 ---
 
@@ -195,6 +217,10 @@ Vous devez voir les ports **5000** et **3000** à l'écoute.
 
 | Problème | Solution |
 |---|---|
+| Rien ne démarre au boot | 1) **Ouvrez l'app Termux:Boot une fois** puis redémarrez. 2) `cat ~/brixbot-boot.log` pour voir où ça bloque. 3) Vérifiez `ls -la ~/.termux/boot/` (le script doit être là). 4) Autorisez le démarrage auto de Termux ET Termux:Boot (Xiaomi : Autostart · Samsung : Apps jamais en veille). |
+| `brixbot-boot.log` dit « Dossier du projet introuvable » | Le dossier ne s'appelle ni `brixbot` ni `wtspbot` : renommez-le avec `mv ~/ancien_nom ~/brixbot` (ou modifiez la liste dans `~/.termux/boot/brixbot.sh`). |
+| `brixbot-boot.log` dit « Pas encore de réseau… » 12 fois | Le Wi-Fi met trop de temps à se connecter, ou il n'y a pas d'accès internet (ex: pas de data). Le bot a besoin d'internet pour WhatsApp. |
+| Le bot démarre puis meurt après quelques secondes | Optimisation batterie encore active sur Termux, ou le téléphone se met en veille : désactivez l'optimisation pour Termux + Termux:Boot, et vérifiez `termux-wake-lock`. |
 | `pkg install … termux-boot` → « Unable to locate package » | Normal : **Termux:Boot est une application F-Droid**, pas un paquet `pkg`. Installez-la depuis F-Droid (étape 1). |
 | `.sticker` ne marche pas | Normal sur Android (sharp indisponible). Tout le reste fonctionne. |
 | Le bot ne se reconnecte pas après coupure Wi-Fi | Baileys se reconnecte tout seul ; vérifiez avec `bash termux/status.sh`. |
