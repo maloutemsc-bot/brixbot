@@ -195,6 +195,42 @@ docker compose up --build
 
 ---
 
+## 📱 Déploiement 24/7 gratuit : vieux téléphone Android (Termux)
+
+> 🛡️ **Recommandé** : un vieux téléphone Android branché en permanence est la
+> solution la plus fiable et la plus sûre pour un bot WhatsApp — IP résidentielle
+> (risque de bannissement quasi nul, contrairement aux IP de datacenter) et 100 %
+> gratuit, sans carte bancaire ni mise en veille.
+
+Guide complet : [`termux/README-TERMUX.md`](termux/README-TERMUX.md)
+
+**En résumé :**
+
+```bash
+# Sur le téléphone (Termux) :
+pkg update && pkg upgrade -y
+pkg install -y python nodejs-lts git nano termux-api termux-boot yt-dlp curl
+
+git clone https://github.com/VOTRE_COMPTE/brixbot.git
+cd brixbot
+
+bash termux/setup-env.sh        # crée les .env (puis copiez vos clés)
+nano backend/.env               # collez le contenu de votre .env Windows
+
+bash termux/install.sh          # dépendances (une seule fois)
+bash termux/start.sh            # démarre + QR code
+
+# 24/7 : démarrage automatique au boot
+cp termux/boot.sh ~/.termux/boot/brixbot.sh
+```
+
+Le panneau est accessible depuis un PC du même Wi-Fi : `http://IP_DU_TEL:5000/admin`
+
+> ℹ️ Sur Android, la commande `.sticker` est désactivée (bibliothèque native
+> `sharp` non installable) — tout le reste fonctionne normalement.
+
+---
+
 ## ☁️ Déploiement sur Render.com
 
 Render ne lit pas `docker-compose.yml` directement : on crée **deux services**

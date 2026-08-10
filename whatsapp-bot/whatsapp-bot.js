@@ -25,7 +25,15 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 
-const sharp = require('sharp');
+// sharp (conversion d'images en stickers) est OPTIONNEL : les binaires natifs
+// ne sont pas installables sur certains environnements (ex: Termux/Android).
+// La commande .sticker est alors désactivée proprement au lieu de crasher.
+let sharp = null;
+try {
+  sharp = require('sharp');
+} catch (_) {
+  console.warn('⚠️ sharp indisponible : la commande .sticker sera désactivée (environnement sans binaires natifs).');
+}
 // Téléchargement YouTube via yt-dlp (binaire Python) : ytdl-core ne peut plus
 // décrypter les URLs de flux de YouTube actuel ("Could not parse decipher").
 // yt-dlp est toujours à jour et gère vidéo ET audio sans clé API.
@@ -904,6 +912,13 @@ async function handleStickerCommand(msg, remoteJid) {
   if (current.videoMessage || quoted?.videoMessage) {
     return replyError(remoteJid,
       '❌ Pour l\'instant, seules les photos deviennent des stickers. (vidéos non supportées)', msg);
+  }
+
+  // sharp absent (ex: Termux/Android) : on refuse proprement au lieu de crasher.
+  if (!sharp) {
+    return replyError(remoteJid,
+      '❌ `.sticker` n\'est pas disponible sur cet appareil '
+      + '(bibliothèque d\'images native absente).', msg);
   }
 
   // Photo du message courant (légende .sticker) ou photo citée

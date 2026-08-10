@@ -1,0 +1,206 @@
+# 📱 BrixBot sur un vieux téléphone Android (Termux) — 24/7 gratuit
+
+Faites tourner **tout le bot** (backend Flask + bot WhatsApp + panneau) sur un
+**vieux téléphone Android** qui reste branché : 100 % gratuit, aucune carte
+bancaire, et surtout **IP résidentielle = risque de bannissement WhatsApp quasi
+nul** (contrairement à Render/VPS dont les IP de datacenter font bannir le
+numéro en quelques semaines).
+
+---
+
+## ✅ Téléphone recommandé
+
+| Critère | Recommandation |
+|---|---|
+| Android | 7.0 ou plus récent |
+| RAM | **2 Go minimum** (Node + Python + Baileys ≈ 500 Mo) |
+| Stockage | 1 Go de libre suffit |
+| Alimentation | Branché en permanence (surtout la nuit) |
+| Réseau | Wi-Fi stable à la maison (ou un forfait data illimité) |
+
+---
+
+## 1. 🛠 Préparer le téléphone
+
+1. Installez **F-Droid** : téléchargez l'APK sur https://f-droid.org puis ouvrez-le.
+2. Depuis F-Droid, installez ces 3 applications :
+   - **Termux** (l'application principale)
+   - **Termux:API** (permet le *wake lock* : le téléphone ne s'endort pas)
+   - **Termux:Boot** (permet le démarrage automatique au redémarrage du téléphone)
+3. Ouvrez Termux et autorisez le stockage :
+   ```
+   termux-setup-storage
+   ```
+   (acceptez la demande d'autorisation de stockage)
+4. **Paramètres Android** (varie selon la marque) :
+   - Désactivez **l'optimisation de la batterie** pour Termux
+     (Paramètres → Batterie → Optimisation → Termux → « Ne pas optimiser »)
+   - Autorisez **le démarrage automatique** de Termux au boot
+     (Xiaomi/Redmi : *Autostart* · Samsung : *Apps jamais en veille* ·
+     Huawei : *Gestionnaire du démarrage* · OnePlus : *Démarrage automatique*)
+
+---
+
+## 2. 📤 Pousser le projet sur GitHub (depuis votre PC)
+
+Les fichiers sensibles (`.env`, `auth_info/`, `instance/`, logs…) sont déjà
+dans `.gitignore` : ils ne seront **jamais** envoyés. Vous pouvez donc créer un
+dépôt **privé** et pousser :
+
+```bash
+# Sur votre PC, dans le dossier du projet :
+git remote add origin https://github.com/VOTRE_COMPTE/brixbot.git
+git branch -M main
+git push -u origin main
+```
+
+> 💡 Si vous n'avez pas de compte GitHub, vous pouvez aussi transférer le dossier
+> du projet sur le téléphone autrement (câble USB, Google Drive…). L'important
+> est d'avoir le dossier du projet sur le téléphone.
+
+---
+
+## 3. 🏗 Installer Termux (sur le téléphone)
+
+Ouvrez Termux et copiez-collez :
+
+```bash
+pkg update && pkg upgrade -y
+pkg install -y python nodejs-lts git nano termux-api termux-boot yt-dlp curl
+```
+
+Puis récupérez le projet :
+
+```bash
+git clone https://github.com/VOTRE_COMPTE/brixbot.git
+cd brixbot
+```
+
+> 📁 Le dossier du projet sera dans `~/brixbot` (chez vous). Si vous l'avez
+> transféré ailleurs, placez-vous dedans avec `cd`.
+
+---
+
+## 4. 🔑 Configurer les clés (copiez depuis votre PC)
+
+Sur votre PC, ouvrez `backend\.env` avec le Bloc-notes (il contient vos clés
+BrixHub / GROQ / propriétaire). Copiez son **contenu complet**.
+
+Sur le téléphone :
+
+```bash
+# Crée les .env depuis les modèles (une seule fois) :
+bash termux/setup-env.sh
+
+# Collez le contenu de votre .env Windows dans chaque fichier :
+nano backend/.env          # → Ctrl+O pour enregistrer, Ctrl+X pour quitter
+nano whatsapp-bot/.env     # → idem
+```
+
+> ⚠️ `BOT_API_KEY` doit être **identique** dans les deux fichiers.
+
+---
+
+## 5. 📦 Installer les dépendances (une seule fois)
+
+```bash
+bash termux/install.sh
+```
+
+> ℹ️ Sur Android, `sharp` (conversion d'images en stickers) n'est pas
+> installable : le script l'ignore et la commande `.sticker` est simplement
+> désactivée proprement. Tout le reste fonctionne (IA, .yt, .ocr, .tts,
+> .translate, .resume, transcription vocale…).
+
+---
+
+## 6. 🚀 Lancer le bot
+
+```bash
+bash termux/start.sh
+```
+
+Ce qui se passe :
+- 🔒 Le **wake lock** est activé (le téléphone ne dort plus)
+- 🌐 Votre **IP locale** s'affiche → le panneau sera accessible sur le PC via
+  `http://IP_DU_TELEPHONE:5000/admin`
+- 🤖 Le backend puis le bot démarrent
+- 📱 Le **QR code** s'affiche dans le terminal (et dans le panneau)
+
+**Scannez le QR avec VOTRE autre téléphone** (celui avec WhatsApp) :
+WhatsApp → Paramètres → Appareils connectés → Connecter un appareil.
+
+Une fois connecté : `✅ WhatsApp connecté`.
+
+> 💡 Le terminal affiche les logs du bot en direct. Pour le quitter sans arrêter
+> le bot, voir la section 7 (démarrage automatique) — c'est LA vraie solution
+> 24/7.
+
+---
+
+## 7. 🔁 Démarrage automatique au boot (la vraie solution 24/7)
+
+1. Copiez le script de boot dans le dossier attendu par Termux:Boot :
+   ```bash
+   cp termux/boot.sh ~/.termux/boot/brixbot.sh
+   ```
+2. **Redémarrez le téléphone.**
+3. Après le redémarrage, Termux:Boot exécute automatiquement le script :
+   le bot se connecte tout seul avec la session sauvegardée (pas de QR à
+   rescanner tant que la session reste valide).
+
+Pour vérifier que tout tourne :
+```bash
+bash termux/status.sh
+```
+Vous devez voir les ports **5000** et **3000** à l'écoute.
+
+---
+
+## 8. 📺 Accéder au panneau depuis votre PC
+
+- Sur le téléphone : `bash termux/status.sh` ou regardez l'IP affichée au
+  démarrage (`ip -4 addr show` dans Termux).
+- Sur le PC : ouvrez **http://IP_DU_TELEPHONE:5000/admin**
+- Pensez à définir `ADMIN_PASSWORD` dans `backend/.env` puisque le panneau est
+  maintenant accessible sur votre réseau local.
+
+> ℹ️ L'IP du téléphone peut changer (Wi-Fi) : pour éviter ça, réservez une IP
+> fixe au téléphone dans l'interface de votre routeur (DHCP reservation).
+
+---
+
+## 9. 🛠 Commandes utiles
+
+| Commande | Effet |
+|---|---|
+| `bash termux/start.sh` | Démarre le bot (terminal, avec QR) |
+| `bash termux/stop.sh` | Arrête tout proprement |
+| `bash termux/status.sh` | Affiche les ports actifs |
+| `bash termux/update.sh` | Met à jour depuis GitHub + réinstalle les dépendances |
+| `bash termux/reset-session.sh` | Supprime la session → **nouveau QR** au prochain démarrage |
+| `termux-wake-lock` / `termux-wake-unlock` | Active / désactive le verrou de veille |
+
+---
+
+## 10. 🔧 Dépannage
+
+| Problème | Solution |
+|---|---|
+| `.sticker` ne marche pas | Normal sur Android (sharp indisponible). Tout le reste fonctionne. |
+| Le bot ne se reconnecte pas après coupure Wi-Fi | Baileys se reconnecte tout seul ; vérifiez avec `bash termux/status.sh`. |
+| Téléphone endormi, plus de réponses | `termux-wake-lock` + désactivez l'optimisation de batterie de Termux. |
+| QR à rescanner régulièrement | Normal si le téléphone a été éteint longtemps. Rescandez simplement. |
+| Erreur `Key used already` / `Bad MAC` | Deux instances tournent → `bash termux/stop.sh` puis relancez UNE seule fois. |
+| Panneau inaccessible depuis le PC | Vérifiez l'IP (même réseau Wi-Fi), et que le port 5000 est écouté. |
+| Mémoire insuffisante | Fermez les autres apps ; un téléphone 2 Go est le minimum. |
+| Numéro banni | 🛡️ N'utilisez **jamais** le numéro principal avec le bot — prenez une SIM dédiée. |
+
+---
+
+## 11. 💡 Conseils de sécurité
+
+- Utilisez un **numéro dédié** pour le bot (pas votre numéro principal).
+- Mettez un `ADMIN_PASSWORD` solide dans `backend/.env`.
+- Ne partagez jamais `backend/.env` ni le dossier `auth_info/` (session = accès
+  complet au compte WhatsApp connecté).
