@@ -31,12 +31,15 @@ rem pinscrape (Pinterest, priorite de .pin) SANS opencv (~350 Mo) :
 rem search() n'en a pas besoin, le service pinscrape_service.py le shime.
 rem Echec = .pin garde DuckDuckGo/Wikimedia (non bloquant).
 rem Installe seulement si absent (gain de temps au demarrage).
-.venv\Scripts\python.exe -c "import pinscrape" >nul 2>&1
+rem NB : le check passe par pinscrape_service (stubs cv2/numpy), pas par un
+rem "import pinscrape" brut qui echouerait pour de mauvaises raisons.
+.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'backend'); import pinscrape_service as ps; assert ps.available()" >nul 2>&1
 if errorlevel 1 (
   .venv\Scripts\python.exe -m pip install --no-deps pinscrape==5.1.0 >nul 2>&1
-  if not errorlevel 1 (echo [OK] pinscrape installe ^(Pinterest pour .pin^)) else (echo [i] pinscrape non installe - .pin utilisera DuckDuckGo/Wikimedia)
+  .venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'backend'); import pinscrape_service as ps; assert ps.available()" >nul 2>&1
+  if not errorlevel 1 (echo [OK] Pinterest ACTIF ^(pinscrape^)) else (echo [i] Pinterest indisponible - .pin utilisera DuckDuckGo/Wikimedia)
 ) else (
-  echo [OK] pinscrape deja installe
+  echo [OK] Pinterest ACTIF ^(pinscrape deja installe^)
 )
 
 :deps_ok

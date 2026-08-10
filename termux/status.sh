@@ -33,6 +33,16 @@ curl -s --max-time 3 http://localhost:5000/api/whatsapp/status 2>/dev/null | hea
 echo ""
 
 echo ""
+echo "=== Pinterest (.pin) ==="
+# pinscrape est optionnel : le check passe par le service (stubs cv2/numpy).
+if python -c "import sys; sys.path.insert(0, 'backend'); import pinscrape_service as ps; assert ps.available()" >/dev/null 2>&1; then
+  echo "✅ Pinterest (pinscrape) : ACTIF — .pin l'utilisera en priorité"
+else
+  echo "⚠️  Pinterest : indisponible — .pin utilisera DuckDuckGo/Wikimedia"
+  echo "    → bash termux/update.sh puis réessayez (ou pkg install python-pydantic)"
+fi
+
+echo ""
 echo "=== IP locale ==="
 IP="$(get_ip)"
 if [ "$IP" != "?" ]; then

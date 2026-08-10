@@ -1872,17 +1872,19 @@ async function handlePinCommand(msg, remoteJid, body) {
     }).catch(() => {});
   }
 
-  // 1) Recherche des URLs — Pinterest (pinscrape) EN PRIORITÉ via le backend,
-  //    puis DuckDuckGo, puis Wikimedia en secours.
+  // 1) Recherche des URLs — Pinterest (pinscrape) EN PRIORITÉ ABSOLUE via le
+  //    backend, puis DuckDuckGo, puis Wikimedia en dernier secours.
+  //    Chaque URL est accompagnée de sa source ('Pinterest'|'DuckDuckGo'|
+  //    'Wikimedia') affichée dans la légende de l'image.
   // On demande PLUS d'URLs que le nombre voulu : certains liens sont morts ou
   // renvoient du HTML, la boucle d'envoi en ignorera et on doit en avoir assez
   // pour atteindre `count` images effectives.
   const fetchCount = Math.min(count * 3, 30);
-  let wikiTried = false; // Wikimedia est tenté au plus une fois (secours ou complément)
-  let urls = [];
+  let items = []; // [{url, source}] — une seule source à la fois (jamais mélangée)
 
-  // 1a) Pinterest (pinscrape) — priorité. Le backend renvoie les URLs Pinterest
-  //     (ou une liste vide si pinscrape absent / échec / timeout).
+  // 1a) Pinterest (pinscrape) — priorité ABSOLUE : si Pinterest renvoie des
+  //     URLs, on n'envoie QUE du Pinterest (aucun mélange avec d'autres sources,
+  //     même si certains liens Pinterest sont morts).
   //     En mode NSFW on saute Pinterest : ses résultats sont toujours "sûrs"
   //     et n'ont rien à faire dans une recherche adulte.
   if (!nsfw) {
@@ -1895,38 +1897,41 @@ async function handlePinCommand(msg, remoteJid, body) {
         timeout: 35000,
       });
       if (pinRes.data?.ok && Array.isArray(pinRes.data.urls) && pinRes.data.urls.length) {
-        urls = pinRes.data.urls;
-        debugLog(`[pin] Pinterest (pinscrape) : ${urls.length} URL(s)`);
+        items = pinRes.data.urls.map((u) => ({ url: u, source: 'Pinterest' }));
+        debugLog(`[pin] Pinterest (pinscrape) : ${items.length} URL(s)`);
       } else {
         debugLog(`[pin] pinscrape indisponible ou vide (source=${pinRes.data?.source || '?'})`);
       }
     } catch (err) {
       debugLog(`[pin] Pinterest injoignable : ${err.message}`);
     }
-  } else {
-    wikiTried = true; // mode NSFW : jamais de Wikimedia (voir plus bas)
   }
 
-  // 1b) Secours : DuckDuckGo si Pinterest n'a rien donné
-  if (!urls.length) {
+  // 1b) Secours : DuckDuckGo — SEULEMENT si Pinterest n'a rien donné du tout
+  if (!items.length) {
     try {
-      urls = await searchDdgImages(query, fetchCount, nsfw);
-      if (urls.length) debugLog(`[pin] DuckDuckGo utilisé (${urls.length} URL(s))`);
+      const ddg = await searchDdgImages(query, fetchCount, nsfw);
+      if (ddg.length) {
+        items = ddg.map((u) => ({ url: u, source: 'DuckDuckGo' }));
+        debugLog(`[pin] DuckDuckGo utilisé (${items.length} URL(s))`);
+      }
     } catch (err) {
       debugLog(`[pin] DuckDuckGo indisponible : ${err.message}`);
     }
   }
-  // 1c) Secours final : Wikimedia (mode normal uniquement)
-  if (!urls.length && !nsfw) {
+  // 1c) Secours final : Wikimedia — SEULEMENT si rien d'autre n'a fonctionné
+  if (!items.length && !nsfw) {
     try {
-      urls = await searchWikiImages(query, fetchCount);
-      wikiTried = true;
-      if (urls.length) debugLog(`[pin] secours Wikimedia utilisé (${urls.length} URL(s))`);
+      const wiki = await searchWikiImages(query, fetchCount);
+      if (wiki.length) {
+        items = wiki.map((u) => ({ url: u, source: 'Wikimedia' }));
+        debugLog(`[pin] secours Wikimedia utilisé (${items.length} URL(s))`);
+      }
     } catch (err) {
       debugLog(`[pin] Wikimedia indisponible : ${err.message}`);
     }
   }
-  if (!urls.length) {
+  if (!items.length) {
     return replyError(remoteJid, `❌ Aucune image trouvée pour « ${query} ». Réessayez.`, msg);
   }
 
@@ -1934,8 +1939,10 @@ async function handlePinCommand(msg, remoteJid, body) {
   // Chaque URL est tentée en séquentiel ; une URL qui échoue (téléchargement ou
   // envoi) est simplement sautée. Timeout court (15 s) pour ne jamais bloquer
   // la commande sur un lien qui pend.
+  // La source (Pinterest / DuckDuckGo / Wikimedia) est affichée dans la légende.
   let sent = 0;
-  const sendOne = async (url) => {
+  const sendOne = async (item) => {
+    const url = item.url;
     let buffer;
     try {
       const res = await axios.get(url, {
@@ -1958,7 +1965,7 @@ async function handlePinCommand(msg, remoteJid, body) {
     try {
       await sock.sendMessage(remoteJid, {
         image: buffer,
-        caption: `📌 *${query}* (${sent + 1}/${count})`,
+        caption: `📌 *${query}* (${sent + 1}/${count}) · ${item.source}`,
       }, { quoted: msg });
       sent++;
     } catch (err) {
@@ -1966,31 +1973,17 @@ async function handlePinCommand(msg, remoteJid, body) {
     }
   };
 
-  // Passe 1 : les URLs DuckDuckGo
-  for (let i = 0; i < urls.length && sent < count; i++) {
-    await sendOne(urls[i]);
-  }
-  // Passe 2 : complément Wikimedia si DuckDuckGo n'a pas fourni assez d'images
-  // (ex: tous ses liens étaient morts) — on ne re-tente jamais Wikimedia deux fois.
-  if (sent < count && !wikiTried) {
-    wikiTried = true;
-    try {
-      const wikiUrls = await searchWikiImages(query, fetchCount);
-      if (wikiUrls.length) debugLog(`[pin] complément Wikimedia (${wikiUrls.length} URL(s))`);
-      for (const url of wikiUrls) {
-        if (sent >= count) break;
-        await sendOne(url);
-      }
-    } catch (err) {
-      debugLog(`[pin] Wikimedia indisponible : ${err.message}`);
-    }
+  // Envoi : UNE SEULE source à la fois (celle de `items`) — jamais de mélange,
+  // donc Pinterest n'est jamais complété par Wikimedia.
+  for (let i = 0; i < items.length && sent < count; i++) {
+    await sendOne(items[i]);
   }
 
   if (!sent) {
     return replyError(remoteJid, "❌ Aucune image n'a pu être envoyée. Réessayez.", msg);
   }
-  debugLog(`[pin] ${sent} image(s) envoyée(s) pour « ${query} »`);
-  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📌 ${sent} image(s) pour « ${query} »`);
+  debugLog(`[pin] ${sent} image(s) envoyée(s) pour « ${query} » (source : ${items[0]?.source})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📌 ${sent} image(s) pour « ${query} » (${items[0]?.source})`);
 }
 
 /* -------------------------------------------------------------------------- */
