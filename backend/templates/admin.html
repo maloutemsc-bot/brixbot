@@ -29,6 +29,7 @@
       <a class="nav-link" data-tab="whatsapp"><span class="nav-icon">📱</span>WhatsApp</a>
       <a class="nav-link" data-tab="ia"><span class="nav-icon">🧠</span>IA</a>
       <a class="nav-link" data-tab="gallery"><span class="nav-icon">📸</span>Galerie</a>
+      <a class="nav-link" data-tab="chats"><span class="nav-icon">💬</span>Chats</a>
       <a class="nav-link" data-tab="logs"><span class="nav-icon">📜</span>Logs</a>
       <a class="nav-link" data-tab="test"><span class="nav-icon">🧪</span>Test API</a>
     </nav>
@@ -377,6 +378,43 @@
           <button class="btn small" id="gallery-prev">← Précédent</button>
           <span id="gallery-info">—</span>
           <button class="btn small" id="gallery-next">Suivant →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== ONGLET : CHATS ==================== -->
+    <section class="tab" id="tab-chats">
+      <div class="card chats-card">
+        <div class="card-header">
+          <div>
+            <h3>💬 Conversations</h3>
+            <p>Reconstruites depuis le journal du bot (transcript). Cliquez sur une conversation pour lire l'historique.</p>
+          </div>
+          <div class="filters">
+            <input type="search" id="chats-search" class="chat-search-input" placeholder="🔎 Rechercher…" autocomplete="off">
+            <button class="btn small" id="chats-refresh" title="Actualiser">⟳</button>
+          </div>
+        </div>
+
+        <div class="chats-banner" id="chats-approx" style="display:none">
+          ⚠️ Une partie des conversations provient de l'ancien journal <strong>transcript.txt</strong> (format
+          sans identifiants) : les regroupements y sont approximatifs. Les nouvelles données sont exactes.
+        </div>
+
+        <div class="chats-layout">
+          <div class="chats-list" id="chats-list">
+            <p class="empty">Chargement…</p>
+          </div>
+          <div class="chat-view" id="chat-view">
+            <div class="chat-view-head">
+              <strong id="chat-view-name">Sélectionnez une conversation</strong>
+              <span id="chat-info"></span>
+            </div>
+            <button class="btn small chat-older" id="chat-older" style="display:none">↑ Messages plus anciens</button>
+            <div class="chat-messages" id="chat-messages">
+              <p class="empty">👈 Choisissez une conversation à gauche pour lire l'historique.</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>

@@ -13,6 +13,7 @@
     logsPage: 1,
     galleryPage: 1,
     aiModels: [],
+    chats: { list: [], selected: null, loaded: 0 },
   };
 
   /* --------------------------------------------------------------------------
@@ -87,6 +88,7 @@
     whatsapp: 'WhatsApp',
     ia: 'Intelligence Artificielle',
     gallery: 'Galerie vu unique',
+    chats: 'Conversations',
     logs: 'Logs',
     test: 'Test API',
   };
@@ -103,6 +105,7 @@
     if (tab === 'whatsapp') loadWhatsApp();
     if (tab === 'ia') loadAI();
     if (tab === 'gallery') loadGallery();
+    if (tab === 'chats') loadChats();
     if (tab === 'logs') loadLogs();
   }
 
@@ -545,6 +548,177 @@
   }
 
   /* --------------------------------------------------------------------------
+     Chats (conversations reconstruites depuis le transcript)
+     -------------------------------------------------------------------------- */
+
+  // Convertit un timestamp (ISO ou "YYYY-MM-DD HH:MM:SS") en heure locale lisible
+  function fmtChatTime(ts) {
+    if (!ts) return '';
+    let date;
+    if (ts.includes('T')) {
+      date = new Date(ts);
+    } else {
+      const m = ts.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/);
+      if (!m) return ts;
+      date = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    }
+    if (isNaN(date)) return ts;
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+    const hm = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    if (sameDay) return hm;
+    return date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) + ' ' + hm;
+  }
+
+  function fmtDay(ts) {
+    if (!ts) return '';
+    let date;
+    if (ts.includes('T')) {
+      date = new Date(ts);
+    } else {
+      const m = ts.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return ts;
+      date = new Date(+m[1], +m[2] - 1, +m[3]);
+    }
+    if (isNaN(date)) return ts;
+    return date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+
+  function chatNearBottom() {
+    const box = $('#chat-messages');
+    return box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  }
+
+  // Charge la liste des conversations et conserve la sélection courante
+  async function loadChats() {
+    try {
+      const data = await api('/api/chats');
+      state.chats.list = data.chats || [];
+
+      $('#chats-approx').style.display = data.approx ? '' : 'none';
+
+      // La sélection peut avoir changé de nom / dernière activité : on la rafraîchit
+      if (state.chats.selected) {
+        const fresh = state.chats.list.find((c) => c.jid === state.chats.selected.jid);
+        if (fresh) {
+          state.chats.selected = fresh;
+          $('#chat-view-name').textContent = fresh.name;
+        } else {
+          state.chats.selected = null;
+        }
+      }
+      // Par défaut, on ouvre la conversation la plus récente
+      if (!state.chats.selected && state.chats.list.length) {
+        selectChat(state.chats.list[0].jid);
+      } else {
+        renderChatsList();
+      }
+    } catch (_) { /* le polling reprendra */ }
+  }
+
+  function renderChatsList() {
+    const q = ($('#chats-search').value || '').trim().toLowerCase();
+    const filtered = q
+      ? state.chats.list.filter((c) => c.name.toLowerCase().includes(q) || c.jid.toLowerCase().includes(q))
+      : state.chats.list;
+
+    const box = $('#chats-list');
+    if (!filtered.length) {
+      box.innerHTML = '<p class="empty">Aucune conversation' + (q ? ' ne correspond à la recherche' : ' enregistrée') + '.</p>';
+      return;
+    }
+
+    box.innerHTML = filtered.map((c) => {
+      const active = state.chats.selected && state.chats.selected.jid === c.jid;
+      const preview = c.last_from_me ? `🤖 ${c.last_text || ''}` : (c.last_text || '—');
+      return `
+      <div class="chat-row ${active ? 'active' : ''}" data-jid="${esc(c.jid)}">
+        <div class="chat-avatar">${esc((c.name || '?').trim().charAt(0).toUpperCase())}</div>
+        <div class="chat-info">
+          <div class="chat-name">${esc(c.name)}</div>
+          <div class="chat-preview">${esc(preview)}</div>
+        </div>
+        <div class="chat-side">
+          <span class="chat-time">${esc(fmtChatTime(c.last_ts))}</span>
+          <span class="chat-count">${c.count}</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    $$('.chat-row').forEach((row) => row.addEventListener('click', () => selectChat(row.dataset.jid)));
+  }
+
+  async function selectChat(jid) {
+    const c = state.chats.list.find((x) => x.jid === jid);
+    if (!c) return;
+    state.chats.selected = c;
+    state.chats.loaded = 0;
+    renderChatsList();
+    $('#chat-view').classList.add('open');
+    $('#chat-view-name').textContent = c.name;
+    $('#chat-messages').innerHTML = '<p class="empty">Chargement…</p>';
+    await loadChatMessages(false);
+  }
+
+  // Charge les messages : les plus récents d'abord, puis "plus anciens" via
+  // un offset (nombre de messages déjà affichés) — jamais de perte même si
+  // plusieurs messages partagent le même timestamp.
+  async function loadChatMessages(older) {
+    const c = state.chats.selected;
+    if (!c) return;
+    const box = $('#chat-messages');
+    try {
+      const params = new URLSearchParams({ jid: c.jid, limit: 60 });
+      if (older) params.set('offset', state.chats.loaded);
+
+      const data = await api(`/api/chats/messages?${params.toString()}`);
+      const messages = data.messages || [];
+
+      const html = renderMessages(messages);
+      if (older) {
+        const keep = box.scrollHeight;
+        box.insertAdjacentHTML('afterbegin', html);
+        box.scrollTop = box.scrollHeight - keep;
+        state.chats.loaded += messages.length;
+      } else {
+        box.innerHTML = html;
+        box.scrollTop = box.scrollHeight;
+        state.chats.loaded = messages.length;
+      }
+
+      $('#chat-older').style.display = data.has_more ? '' : 'none';
+      $('#chat-info').textContent = `${data.total} message(s)`;
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  function renderMessages(messages) {
+    if (!messages.length) return '<p class="empty">Aucun message dans cette conversation.</p>';
+    let lastDay = '';
+    let html = '';
+    messages.forEach((m) => {
+      const day = (m.ts || '').slice(0, 10);
+      if (day && day !== lastDay) {
+        lastDay = day;
+        html += `<div class="date-sep">${esc(fmtDay(m.ts))}</div>`;
+      }
+      const cls = m.fromMe ? 'out' : 'in';
+      // En groupe, on affiche le nom du membre ; en privé il est redondant
+      const showName = !m.fromMe && m.name && m.name !== (state.chats.selected?.name);
+      const time = fmtChatTime(m.ts);
+      html += `
+      <div class="msg ${cls}">
+        <div class="msg-bubble">
+          ${showName ? `<div class="msg-name">${esc(m.name)}</div>` : ''}
+          <div class="msg-text">${esc(m.content)}</div>
+          <div class="msg-time">${esc(time)}</div>
+        </div>
+      </div>`;
+    });
+    return html;
+  }
+
+  /* --------------------------------------------------------------------------
      Diagnostic
      -------------------------------------------------------------------------- */
 
@@ -680,6 +854,14 @@
   $('#gallery-next').addEventListener('click', () => { state.galleryPage += 1; loadGallery(); });
   $('#gallery-clear').addEventListener('click', clearGallery);
 
+  // Chats
+  $('#chats-refresh').addEventListener('click', () => {
+    loadChats();
+    if (state.chats.selected) loadChatMessages(false);
+  });
+  $('#chats-search').addEventListener('input', () => { renderChatsList(); });
+  $('#chat-older').addEventListener('click', () => loadChatMessages(true));
+
   $('#log-status').addEventListener('change', () => { state.logsPage = 1; loadLogs(); });
   $('#log-type').addEventListener('change', () => { state.logsPage = 1; loadLogs(); });
   $('#logs-prev').addEventListener('click', () => { state.logsPage = Math.max(1, state.logsPage - 1); loadLogs(); });
@@ -705,6 +887,13 @@
   setInterval(() => { if (state.tab === 'whatsapp') loadWhatsApp(); }, 5000);
   // Le tableau de bord est rafraîchi toutes les 20 s
   setInterval(() => { if (state.tab === 'dashboard') loadDashboard(); }, 20000);
+  // Les conversations sont rafraîchies toutes les 15 s ; le fil de discussion
+  // n'est rechargé que si l'utilisateur est en bas (pour ne pas le déranger)
+  setInterval(() => {
+    if (state.tab !== 'chats') return;
+    loadChats();
+    if (state.chats.selected && chatNearBottom()) loadChatMessages(false);
+  }, 15000);
 
   /* --------------------------------------------------------------------------
      Démarrage

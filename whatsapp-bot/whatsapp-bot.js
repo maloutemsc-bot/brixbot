@@ -299,6 +299,27 @@ function transcriptLog(line) {
   } catch (_) { /* le journal ne doit jamais bloquer le bot */ }
 }
 
+// Journal structuré (transcript.jsonl) : même contenu que transcript.txt mais
+// avec les identifiants de conversation (jid) et d'expéditeur. C'est lui qui
+// permet au panneau de reconstruire les conversations proprement.
+// Format par ligne : {"ts":ISO,"jid":...,"sender":...,"name":...,
+//                     "chat_name":...,"content":...,"fromMe":bool,"type":...}
+const TRANSCRIPT_JSONL = path.join(__dirname, process.env.TRANSCRIPT_JSONL || 'transcript.jsonl');
+function transcriptJsonl(entry) {
+  if (!TRANSCRIPT_ENABLED) return;
+  try {
+    if (fs.existsSync(TRANSCRIPT_JSONL) && fs.statSync(TRANSCRIPT_JSONL).size > 5 * 1024 * 1024) {
+      fs.writeFileSync(TRANSCRIPT_JSONL, '');
+    }
+    fs.appendFileSync(TRANSCRIPT_JSONL, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (_) { /* le journal ne doit jamais bloquer le bot */ }
+}
+
+// Cache jid → nom du chat (contact en privé, sujet en groupe). Il permet de
+// retrouver le nom de la conversation même pour les messages envoyés depuis
+// le compte lié (fromMe), qui ne portent pas le nom de l'interlocuteur.
+const nameByJid = new Map();
+
 // Cache du nom des groupes (récupérés via groupMetadata, coûteux en réseau)
 const groupNameCache = new Map();
 
@@ -616,6 +637,8 @@ async function transcriptMessage(msg, key, body) {
   const remoteJid = key.remoteJid;
   const sender = key.participant || remoteJid;
   const stamp = fmtStamp(new Date());
+  const ts = new Date().toISOString();
+  const isGroup = remoteJid.endsWith('@g.us');
 
   let content;
   if (body && body.trim()) {
@@ -625,12 +648,28 @@ async function transcriptMessage(msg, key, body) {
   }
 
   if (key.fromMe) {
+    // Messages envoyés depuis le compte lié : le nom du chat vient du cache
+    // (rempli par les messages reçus), sinon on résout à la volée.
+    const cached = nameByJid.get(remoteJid);
+    let chatName = cached;
+    if (!chatName) {
+      chatName = isGroup
+        ? await resolveSenderName(remoteJid, sender, msg.pushName)
+        : contactLabel(remoteJid);
+      nameByJid.set(remoteJid, chatName);
+    }
     transcriptLog(`[${stamp}] 🤖 BrixBot : ${content}`);
+    transcriptJsonl({ ts, jid: remoteJid, sender, name: '🤖 BrixBot', chat_name: chatName, content, fromMe: true, type: rawType });
     return;
   }
-  // Nom résolu de manière asynchrone (ne bloque jamais le flux)
-  const who = await resolveSenderName(remoteJid, sender, msg.pushName);
-  transcriptLog(`[${stamp}] ${who} : ${content}`);
+  // Nom du chat résolu de manière asynchrone (ne bloque jamais le flux).
+  // En groupe, `name` est le nom du MEMBRE (pushName) et `chat_name` le sujet
+  // du groupe ; en privé, les deux sont le nom du contact.
+  const chatName = await resolveSenderName(remoteJid, sender, msg.pushName);
+  nameByJid.set(remoteJid, chatName);
+  const memberName = isGroup ? (msg.pushName || contactLabel(sender)) : chatName;
+  transcriptLog(`[${stamp}] ${chatName} : ${content}`);
+  transcriptJsonl({ ts, jid: remoteJid, sender, name: memberName, chat_name: chatName, content, fromMe: false, type: rawType });
 }
 
 async function handleMessage(msg) {

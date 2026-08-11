@@ -22,7 +22,9 @@ import base64
 import binascii
 import datetime
 import io
+import json
 import os
+import re
 import sys
 from functools import wraps
 
@@ -573,6 +575,241 @@ def get_transcript():
                               "Content-Disposition": 'attachment; filename="transcript.txt"'}
     except OSError as exc:
         return jsonify({"ok": False, "error": f"Lecture impossible : {exc}"}), 500
+
+
+# --------------------------------------------------------------------------- #
+#  Chats — reconstruction des conversations depuis le journal structuré (JSONL)
+# --------------------------------------------------------------------------- #
+
+TRANSCRIPT_JSONL = os.path.join(BASE_DIR, "..", "whatsapp-bot", "transcript.jsonl")
+TRANSCRIPT_TXT = os.path.join(BASE_DIR, "..", "whatsapp-bot", "transcript.txt")
+
+_TXT_LINE_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] (.+?) : (.*)$")
+
+# Cache simple (clé = mtime+taille des deux journaux) : le panneau interroge
+# ces routes toutes les 15 s, on évite de reparser 5 Mo à chaque fois.
+_chat_cache = {"key": None, "entries": None, "approx": None}
+
+
+def _load_jsonl_entries():
+    """Lit le journal structuré (transcript.jsonl) : une entrée par ligne."""
+    entries = []
+    if not os.path.exists(TRANSCRIPT_JSONL):
+        return entries
+    try:
+        with open(TRANSCRIPT_JSONL, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue  # ligne corrompue : ignorée, on continue
+                if not e.get("jid"):
+                    continue
+                entries.append({
+                    "ts": str(e.get("ts") or ""),
+                    "jid": str(e["jid"]),
+                    "sender": str(e.get("sender") or ""),
+                    "name": str(e.get("name") or ""),
+                    "chat_name": str(e.get("chat_name") or e.get("name") or ""),
+                    "content": str(e.get("content") or ""),
+                    "fromMe": bool(e.get("fromMe")),
+                    "type": str(e.get("type") or ""),
+                })
+    except OSError:
+        pass
+    return entries
+
+
+def _chat_entries_from_txt():
+    """
+    Repli (approximatif) sur transcript.txt : lit le journal texte et regroupe
+    par nom. Sans identifiants, deux contacts au même nom seraient fusionnés et
+    les réponses du bot sont rattachées à la dernière conversation vue — d'où
+    le drapeau "approx" affiché dans le panneau.
+    """
+    entries = []
+    if not os.path.exists(TRANSCRIPT_TXT):
+        return entries
+    last_non_bot_key = None
+    conv_of_name = {}
+    try:
+        with open(TRANSCRIPT_TXT, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = _TXT_LINE_RE.match(line.rstrip("\n"))
+                if not m:
+                    continue
+                stamp, name, content = m.group(1), m.group(2).strip(), m.group(3)
+                is_bot = name.startswith("🤖") or name.strip() == "BrixBot"
+                if is_bot:
+                    key = last_non_bot_key
+                    sender = ""
+                else:
+                    key = conv_of_name.get(name)
+                    if key is None:
+                        key = f"txt:{name}"
+                        conv_of_name[name] = key
+                    last_non_bot_key = key
+                    sender = key
+                if key is None:
+                    continue
+                # Le transcript.txt est en heure locale : on convertit en UTC pour
+                # rester cohérent avec le JSONL (les deux journaux se fusionnent).
+                try:
+                    naive = datetime.datetime.strptime(stamp, "%Y-%m-%d %H:%M")
+                    ts = naive.astimezone().astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                except ValueError:
+                    ts = f"{stamp.replace(' ', 'T')}:00"
+                entries.append({
+                    "ts": ts,
+                    "jid": key,
+                    "sender": sender,
+                    "name": "🤖 BrixBot" if is_bot else name,
+                    "chat_name": "" if is_bot else name,
+                    "content": content,
+                    "fromMe": is_bot,
+                    "type": "txt",
+                })
+    except OSError:
+        pass
+    return entries
+
+
+def _chat_entries():
+    """
+    Charge tous les messages échangés (liste de dicts). Priorité au journal
+    structuré JSONL ; l'ancien journal texte (transcript.txt) est FUSIONNÉ
+    pour que l'historique déjà collecté reste visible : les conversations texte
+    dont le nom existe déjà dans le JSONL sont rattachées à la vraie conversation
+    (jid réel), les autres gardent un jid "txt:Nom".
+
+    Retourne (entries, approx) où approx=True signale qu'une partie des données
+    provient de l'ancien format (reconstruction approximative).
+    """
+    def _key():
+        parts = []
+        for path in (TRANSCRIPT_JSONL, TRANSCRIPT_TXT):
+            try:
+                st = os.stat(path)
+                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append("x")
+        return "|".join(parts)
+
+    key = _key()
+    if _chat_cache["key"] == key:
+        return _chat_cache["entries"], _chat_cache["approx"]
+
+    jsonl_entries = _load_jsonl_entries()
+    txt_entries = _chat_entries_from_txt()
+
+    if not jsonl_entries and not txt_entries:
+        _chat_cache.update(key=key, entries=[], approx=False)
+        return [], False
+
+    if not jsonl_entries:
+        _chat_cache.update(key=key, entries=txt_entries, approx=True)
+        return txt_entries, True
+
+    # Fusion : nom de conversation (chat_name JSONL) → jid réel
+    name_to_jid = {}
+    for e in jsonl_entries:
+        if e["chat_name"] and e["chat_name"] not in name_to_jid:
+            name_to_jid[e["chat_name"]] = e["jid"]
+
+    merged = list(jsonl_entries)
+    txt_used = 0
+    for e in txt_entries:
+        if e["jid"].startswith("txt:"):
+            target = name_to_jid.get(e["jid"][4:])
+            if target:
+                e["jid"] = target
+        merged.append(e)
+        txt_used += 1
+
+    _chat_cache.update(key=key, entries=merged, approx=txt_used > 0)
+    return merged, txt_used > 0
+
+
+@app.route("/api/chats")
+@require_admin
+@limiter.limit("30 per minute")
+def chats_list():
+    """
+    Liste les conversations reconstruites depuis le journal du bot, triées par
+    dernière activité. Paramètre optionnel ?q= pour filtrer par nom ou jid.
+    """
+    entries, approx = _chat_entries()
+    chats = {}
+    for e in entries:
+        c = chats.get(e["jid"])
+        if c is None:
+            c = {
+                "jid": e["jid"],
+                "name": e["chat_name"] or e["name"] or "Inconnu",
+                "count": 0,
+                "last_ts": "",
+                "last_text": "",
+                "last_from_me": False,
+            }
+            chats[e["jid"]] = c
+        c["count"] += 1
+        if e["ts"] >= c["last_ts"]:
+            c["last_ts"] = e["ts"]
+            c["last_text"] = e["content"]
+            c["last_from_me"] = e["fromMe"]
+
+    items = sorted(chats.values(), key=lambda c: c["last_ts"], reverse=True)
+    q = (request.args.get("q") or "").strip().lower()
+    if q:
+        items = [c for c in items if q in c["name"].lower() or q in c["jid"].lower()]
+    return jsonify({
+        "chats": items[:200],
+        "total": len(items),
+        "approx": approx,
+        "source": "txt" if approx else "jsonl",
+    })
+
+
+@app.route("/api/chats/messages")
+@require_admin
+@limiter.limit("60 per minute")
+def chats_messages():
+    """
+    Messages d'une conversation, du plus ancien au plus récent. Pagination par
+    l'arrière via ?offset=<nombre déjà chargé> : le fil de discussion ne perd
+    jamais de messages, même quand plusieurs partagent le même timestamp.
+    """
+    jid = (request.args.get("jid") or "").strip()
+    if not jid:
+        return jsonify({"ok": False, "error": "Paramètre jid requis."}), 400
+    try:
+        limit = min(int(request.args.get("limit") or 60), 200)
+    except ValueError:
+        limit = 60
+    limit = max(1, limit)
+    try:
+        offset = max(0, int(request.args.get("offset") or 0))
+    except ValueError:
+        offset = 0
+
+    entries, approx = _chat_entries()
+    mine = sorted(
+        (e for e in entries if e["jid"] == jid),
+        key=lambda e: (e["ts"], e["sender"]),
+    )
+    total = len(mine)
+    end = max(0, total - offset)
+    start = max(0, end - limit)
+    page = mine[start:end]
+    return jsonify({
+        "messages": page,
+        "has_more": start > 0,
+        "total": total,
+        "approx": approx,
+    })
 
 
 @app.route("/api/whatsapp/restart", methods=["POST"])
