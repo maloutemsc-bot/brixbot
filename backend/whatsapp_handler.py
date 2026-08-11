@@ -119,6 +119,8 @@ HELP_TEXT = (
     "    ✏️ `.correct` (réponse à un message ou `.correct texte`) — corrige l'orthographe et la grammaire (IA)\n"
     "📖 `.ocr` (réponse à une photo) — lit le texte de l'image.\n"
     "    📌 .pin chat — envoie des images (gratuit) · .pin nsfw chat pour désactiver le filtre 🔞\n"
+    "    🎵 .lyrics artiste - titre — affiche les paroles d'une chanson\n"
+    "    🎧 .spo artiste - titre — télécharge la chanson (audio) et l'envoie dans le chat\n"
     "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall` · `.link` · `.close` · `.open` · `.revoke`\n"
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"

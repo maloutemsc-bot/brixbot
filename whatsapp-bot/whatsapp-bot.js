@@ -822,6 +822,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commandes musique (.lyrics / .spo) ---
+  if (/^\.(lyrics|spo)\b/i.test(trimmed)) {
+    debugLog(`[musique] commande : ${trimmed}`);
+    handleMusicCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[musique] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande .clear : purge des messages de la conversation ---
   if (/^\.clear\b/i.test(trimmed)) {
     debugLog(`[clear] commande : ${trimmed}`);
@@ -3085,6 +3094,198 @@ function runYtDlp(args) {
       }
     });
   });
+}
+
+/**
+ * Découpe les arguments "artiste - titre" (ou "artiste titre") d'une commande
+ * musique. Retourne { artist, title } ou null si incomplet.
+ * Le séparateur peut être un tiret simple, long ou un tiret sur 2 (-, –, —).
+ */
+function parseArtistTitle(rest) {
+  // Forme "artiste - titre" (tiret simple, long ou tiret sur 2)
+  const m = rest.match(/^(.+?)\s*[-–—]\s*(.+)$/);
+  if (m && m[1].trim() && m[2].trim()) {
+    const title = m[2].trim();
+    if (!/^[-–—]+$/.test(title)) return { artist: m[1].trim(), title };
+  }
+  // Sans tiret : dernier mot = titre, le reste = artiste
+  const parts = rest.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const title = parts.pop();
+  if (!title || /^[-–—]+$/.test(title)) return null;
+  return { artist: parts.join(' '), title };
+}
+
+/**
+ * .lyrics artiste - titre — affiche les paroles d'une chanson.
+ *
+ * Source : API publique lyrics.ovh (gratuite, sans clé). Le résultat est
+ * envoyé en plusieurs messages si les paroles sont longues (.ask et .resume
+ * utilisent déjà le découpage sendChunks).
+ */
+async function handleLyricsCommand(msg, remoteJid, body) {
+  const rest = body.replace(/^\.lyrics\s*/i, '').trim();
+  const parsed = parseArtistTitle(rest);
+  if (!parsed) {
+    return replyError(remoteJid,
+      '🎵 *Commande .lyrics*\n'
+      + 'Utilisation : `.lyrics artiste - titre`\n'
+      + 'Exemple : `.lyrics Daft Punk - Get Lucky`', msg);
+  }
+
+  let lyrics = '';
+  try {
+    const { data } = await axios.get(
+      `https://api.lyrics.ovh/v1/${encodeURIComponent(parsed.artist)}/${encodeURIComponent(parsed.title)}`,
+      { timeout: 20000 },
+    );
+    lyrics = String(data?.lyrics || '').trim();
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return replyError(remoteJid,
+        `❌ Paroles introuvables pour « ${parsed.artist} — ${parsed.title} ».\n`
+        + 'Vérifiez l\'orthographe ou réessayez avec `.lyrics artiste - titre`.', msg);
+    }
+    debugLog(`[lyrics] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer les paroles. Réessayez plus tard.', msg);
+  }
+
+  if (!lyrics) {
+    return replyError(remoteJid,
+      `❌ Paroles introuvables pour « ${parsed.artist} — ${parsed.title} ».`, msg);
+  }
+
+  const header = `🎵 *${parsed.title}* — ${parsed.artist}\n\n`;
+  // Les paroles peuvent dépasser la limite d'un message WhatsApp
+  await sendChunks(remoteJid, header + lyrics, msg);
+  debugLog(`[lyrics] paroles envoyées : ${parsed.artist} — ${parsed.title} (${lyrics.length} caractères)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎵 [paroles] ${parsed.artist} — ${parsed.title}`);
+}
+
+/**
+ * .spo artiste - titre — télécharge une chanson (audio) et l'envoie dans le chat.
+ *
+ * Spotify ne propose pas d'API de téléchargement public : on cherche donc la
+ * chanson sur YouTube via yt-dlp (ytsearch1: = meilleur résultat) puis on
+ * envoie l'audio — même mécanisme que .audio, sans clé API.
+ */
+async function handleSpoCommand(msg, remoteJid, body) {
+  const rest = body.replace(/^\.spo\s*/i, '').trim();
+  const parsed = parseArtistTitle(rest);
+  if (!parsed) {
+    return replyError(remoteJid,
+      '🎧 *Commande .spo*\n'
+      + 'Utilisation : `.spo artiste - titre`\n'
+      + 'Exemple : `.spo Daft Punk - Get Lucky`', msg);
+  }
+
+  const cmd = resolveYtDlp();
+  if (!cmd) {
+    return replyError(remoteJid, '❌ yt-dlp n\'est pas installé. Installez-le (pip install yt-dlp) puis relancez.', msg);
+  }
+
+  // 1) Recherche du meilleur résultat sur YouTube (ytsearch1:)
+  const searchQuery = `ytsearch1:${parsed.artist} ${parsed.title} audio`;
+  let info = null;
+  try {
+    const out = await runYtDlp(['--dump-json', '--no-playlist', '--no-warnings', searchQuery]);
+    info = JSON.parse(out.split('\n')[0]);
+  } catch (err) {
+    debugLog(`[spo] recherche impossible : ${err.message}`);
+    return replyError(remoteJid,
+      `❌ Chanson introuvable pour « ${parsed.artist} — ${parsed.title} ».`, msg);
+  }
+
+  // Télécharge DEPUIS l'URL résolue (info.webpage_url) et non en relançant la
+  // recherche : l'ordre des résultats YouTube peut varier entre deux appels et
+  // l'audio envoyé doit correspondre au titre affiché.
+  const resolvedUrl = info?.webpage_url || `https://www.youtube.com/watch?v=${info?.id}`;
+  const duration = Number(info?.duration) || 0;
+  if (duration > YT_AUDIO_MAX_SECONDS) {
+    return replyError(remoteJid,
+      `⏱️ Chanson trop longue (${Math.round(duration / 60)} min). Maximum : ${Math.round(YT_AUDIO_MAX_SECONDS / 60)} min.`, msg);
+  }
+
+  const title = String(info?.title || `${parsed.artist} — ${parsed.title}`).slice(0, 80);
+  const safeTitle = title.replace(/[\\/:*?"<>|\r\n]+/g, '_').trim() || 'chanson';
+  const filePrefix = `spo-${Date.now()}`;
+
+  // Message de statut pendant la recherche + le téléchargement
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: `🎧 Téléchargement de « ${title} »… (quelques secondes)`,
+    }).catch(() => {});
+  }
+
+  // 2) Téléchargement de l'audio (m4a si possible, sinon webm)
+  try {
+    await runYtDlp([
+      '--no-playlist', '--no-warnings',
+      '-f', 'bestaudio[ext=m4a]/bestaudio',
+      '-o', path.join(MEDIA_DIR, filePrefix + '.%(ext)s'),
+      '--no-part',
+      resolvedUrl,
+    ]);
+  } catch (err) {
+    debugLog(`[spo] téléchargement impossible : ${err.message}`);
+    cleanupYtPrefix(filePrefix);
+    return replyError(remoteJid, '❌ Échec du téléchargement. Réessayez plus tard.', msg);
+  }
+
+  // Retrouve le fichier réellement créé (extension choisie par yt-dlp)
+  let filePath = null;
+  let ext = 'm4a';
+  try {
+    const candidates = fs.readdirSync(MEDIA_DIR)
+      .filter((f) => f.startsWith(filePrefix))
+      .map((f) => path.join(MEDIA_DIR, f));
+    filePath = candidates[0] || null;
+    if (filePath) ext = path.extname(filePath).slice(1).toLowerCase();
+  } catch (_) { /* dossier illisible */ }
+
+  if (!filePath) {
+    return replyError(remoteJid, '❌ Chanson introuvable après le téléchargement.', msg);
+  }
+
+  // Garde-fou : fichier trop gros pour WhatsApp
+  let size = 0;
+  try { size = fs.statSync(filePath).size; } catch (_) { /* fichier introuvable */ }
+  if (size > YT_MAX_BYTES) {
+    debugLog(`[spo] fichier trop gros : ${Math.round(size / 1048576)} Mo`);
+    setTimeout(() => fs.unlink(filePath, () => {}), 5000);
+    return replyError(remoteJid,
+      `❌ Fichier trop gros pour WhatsApp (${Math.round(size / 1048576)} Mo > 60 Mo).`, msg);
+  }
+
+  const mimetype = (ext === 'm4a' || ext === 'mp4') ? 'audio/mp4'
+    : (ext === 'webm') ? 'audio/webm' : 'audio/mpeg';
+
+  try {
+    await sock.sendMessage(remoteJid, {
+      audio: { url: filePath },
+      mimetype,
+      fileName: `${safeTitle}.${ext}`,
+      ptt: false, // audio normal (pas une note vocale)
+    }, { quoted: msg });
+    debugLog(`[spo] audio envoyé : ${title} (${Math.round(size / 1048576)} Mo, .${ext})`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎧 [chanson envoyée] ${title}`);
+  } catch (err) {
+    debugLog(`[spo] envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Envoi de la chanson impossible.', msg);
+  } finally {
+    // Nettoyage différé du fichier temporaire
+    setTimeout(() => fs.unlink(filePath, () => {}), 60000);
+  }
+}
+
+/**
+ * Point d'entrée des commandes musique : .lyrics (paroles) et .spo (audio).
+ */
+async function handleMusicCommand(msg, remoteJid, body) {
+  if (/^\.lyrics\b/i.test(body)) {
+    return handleLyricsCommand(msg, remoteJid, body);
+  }
+  return handleSpoCommand(msg, remoteJid, body);
 }
 
 /**
