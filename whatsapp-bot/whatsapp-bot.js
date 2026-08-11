@@ -99,6 +99,8 @@ console.error = (...args) => {
     if (!decryptNoiseShown) {
       decryptNoiseShown = true;
       _origError('ℹ️ Bruit de décryptage ignoré (messages redélivrés par WhatsApp — normal).');
+      // Premier détail de l'erreur réelle → bot-messages.log pour le diagnostic
+      debugLog(`[decrypt] 1er détail ignoré : ${args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ').slice(0, 400)}`);
     }
     return;
   }
@@ -728,10 +730,13 @@ async function handleMessage(msg) {
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
 
-  // Message sans contenu décrypté (type=?) : on le journalise pour diagnostiquer
-  // un éventuel échec de décryptage des vus uniques (le contenu est alors vide).
+  // Message sans contenu décrypté (type=?) : on journalise les détails du stub
+  // (stubType + paramètres CIPHERTEXT) pour diagnostiquer un échec de décryptage
+  // ou un contenu bloqué par WhatsApp (cas des vus uniques sur appareil lié).
   if (rawType === '?') {
-    debugLog(`[recu] contenu vide/non décrypté (id=${key.id}) — non traitable`);
+    const stub = msg.messageStubType;
+    const params = (msg.messageStubParameters || []).join('|');
+    debugLog(`[recu] contenu vide/non décrypté (id=${key.id} jid=${remoteJid} stubType=${stub} params=${params || '-'})`);
   }
 
   // Signale si on mentionne / écrit à un membre absent (AFK)
