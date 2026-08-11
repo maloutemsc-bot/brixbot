@@ -36,6 +36,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 import ai_service
+import brat_scrape_service
 import brat_service
 import brixhub_service
 import pinterest_service
@@ -711,7 +712,11 @@ def make_brat():
     if len(text) > 600:
         return jsonify({"ok": False, "error": "Texte trop long (max 600 caractères)."}), 400
 
-    webp = brat_service.render(text)
+    # 1) Scraping du VRAI générateur (bratify.vercel.app) : rendu authentique.
+    #    Si le navigateur est absent ou le site indisponible → génération locale.
+    webp = brat_scrape_service.render(text) if brat_scrape_service.available() else None
+    if not webp:
+        webp = brat_service.render(text)
     if not webp:
         return jsonify({"ok": False, "error": "Rendu brat impossible."}), 422
     return Response(webp, mimetype="image/webp")

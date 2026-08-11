@@ -3351,7 +3351,9 @@ async function handleBratCommand(msg, remoteJid, body) {
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/brat`, { text }, {
       headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
-      timeout: 30000,
+      // Scraping du vrai générateur (navigateur headless) : plus lent que la
+      // génération locale, on laisse jusqu'à 60 s.
+      timeout: 60000,
       responseType: 'arraybuffer',
     });
     if (!data || !data.length) {

@@ -11,3 +11,8 @@ Pillow==10.4.0
 # fontTools : conversion woff→ttf de la police Arial Narrow (.brat authentique,
 # téléchargée à l'installation via fetch_brat_font.py — jamais committée).
 fonttools==4.53.1
+# Playwright : scraping du VRAI générateur brat (bratify.vercel.app) pour un
+# rendu 100% identique au site. Utilise le navigateur SYSTÈME (Chrome/Edge/
+# Chromium), aucun téléchargement Chromium requis. Optionnel : si absent, .brat
+# retombe sur la génération locale brat_service.py.
+playwright==1.46.0

@@ -23,6 +23,18 @@ python -m pip install -r backend/requirements.txt 2>/dev/null || echo "  ⚠️ 
 echo "[1b/3] Police brat authentique (Arial Narrow)…"
 python backend/fetch_brat_font.py || true
 
+# Navigateur pour le scraping .brat (rendu 100% identique au site bratify).
+# Chromium Termux ~200 Mo : NON FATAL, .brat retombe sur la génération locale.
+echo "[1c/3] Navigateur pour .brat (scraping authentique)…"
+if command -v pkg >/dev/null 2>&1 && ! command -v chromium >/dev/null 2>&1; then
+  pkg install -y chromium >/dev/null 2>&1 || echo "  ⚠️ chromium : échec — .brat utilisera le rendu local (fallback)"
+fi
+if command -v chromium >/dev/null 2>&1; then
+  echo "  ✅ Navigateur présent : .brat utilisera le VRAI générateur (scraping)"
+else
+  echo "  ⚠️ Aucun navigateur : .brat utilisera le rendu local (fallback)"
+fi
+
 echo "  ✅ Pinterest (.pin) : API directe intégrée — aucune installation supplémentaire"
 echo "  ✅ Stickers (.sticker) : conversion via le backend (Pillow + WebP)"
 

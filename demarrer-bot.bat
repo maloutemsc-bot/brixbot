@@ -42,6 +42,13 @@ if exist "backend\fetch_brat_font.py" (
   .venv\Scripts\python.exe backend\fetch_brat_font.py >nul 2>&1 || echo [OK] .brat : police libre utilisee
 )
 
+rem Scraping .brat : le rendu authentique vient du VRAI site (bratify.vercel.app)
+rem via Playwright + navigateur SYSTEME (Chrome ou Edge detectes automatiquement).
+rem Aucune installation supplementaire sur Windows (Chrome/Edge deja presents).
+if exist "backend\brat_scrape_service.py" (
+  .venv\Scripts\python.exe -c "import sys; sys.path.insert(0,'backend'); import brat_scrape_service as b; print('[OK] .brat : scraping authentique ACTIF' if b.available() else '[OK] .brat : rendu local (fallback)')"
+)
+
 rem ---------- 2. Fichiers .env ----------
 if not exist "backend\.env" copy /Y "backend\.env.example" "backend\.env" >nul
 if not exist "whatsapp-bot\.env" copy /Y "whatsapp-bot\.env.example" "whatsapp-bot\.env" >nul
