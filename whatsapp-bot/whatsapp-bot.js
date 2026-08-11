@@ -415,6 +415,7 @@ async function startBot() {
   if (sock) return;          // un socket est déjà actif — JAMAIS deux
   startPending = true;
   console.log('🤖 Démarrage du bot WhatsApp…');
+  debugLog('[version] v2.4.1 — capture vu unique renforcée (wrappers + flag viewOnce)');
   try {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
@@ -711,6 +712,11 @@ async function handleMessage(msg) {
   // dès la réception (avant qu'elles ne soient consommées), les enregistre dans
   // la galerie du panneau, et ne répond RIEN à l'expéditeur (silencieux).
   const viewOnceInner = extractViewOnce(msg);
+  if (hasViewOnceIndicator(msg) && !viewOnceInner) {
+    // Diagnostic : un indicateur "vu unique" est présent mais le contenu n'est
+    // pas exploitable (format inattendu, wrapper vide, média non image/vidéo…).
+    debugLog(`[vuunique] indicateur présent mais contenu non exploitable (type=${rawType} clés=${Object.keys(msg.message || {}).join(',')})`);
+  }
   if (viewOnceInner && !key.fromMe) {
     debugLog(`[vuunique] capture silencieuse reçue (${rawType}) de ${contactLabel(sender)}`);
     captureViewOnce(msg, key, remoteJid, sender, viewOnceInner).catch((err) => {
@@ -721,6 +727,12 @@ async function handleMessage(msg) {
 
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
+
+  // Message sans contenu décrypté (type=?) : on le journalise pour diagnostiquer
+  // un éventuel échec de décryptage des vus uniques (le contenu est alors vide).
+  if (rawType === '?') {
+    debugLog(`[recu] contenu vide/non décrypté (id=${key.id}) — non traitable`);
+  }
 
   // Signale si on mentionne / écrit à un membre absent (AFK)
   maybeNotifyAfk(msg, remoteJid, sender, isGroup).catch((err) => {
@@ -3461,11 +3473,54 @@ async function handleBratCommand(msg, remoteJid, body) {
  * Extrait le message interne d'un média "vu unique" (viewOnceMessage / V2 /
  * V2Extension). Retourne null si le message n'est pas un vu unique.
  */
+/**
+ * Déballe récursivement les wrappers possibles (ephemeralMessage, viewOnce*…)
+ * jusqu'à obtenir le contenu réel (imageMessage / videoMessage / …).
+ * Retourne le contenu inchangé s'il n'y a aucun wrapper.
+ */
+function unwrapContent(content) {
+  for (let i = 0; i < 5; i++) {
+    const inner = content?.ephemeralMessage?.message
+      || content?.viewOnceMessage?.message
+      || content?.viewOnceMessageV2?.message
+      || content?.viewOnceMessageV2Extension?.message;
+    if (!inner) return content;
+    content = inner;
+  }
+  return content;
+}
+
+/**
+ * Vrai si le message porte UN indicateur de "vu unique" : un wrapper
+ * viewOnceMessage / V2 / V2Extension, ou un média avec le flag viewOnce: true.
+ */
+function hasViewOnceIndicator(msg) {
+  const m = msg.message || {};
+  return !!(m.viewOnceMessage || m.viewOnceMessageV2 || m.viewOnceMessageV2Extension
+    || m.imageMessage?.viewOnce || m.videoMessage?.viewOnce || m.audioMessage?.viewOnce);
+}
+
+/**
+ * Extrait le média d'un message "vu unique".
+ *
+ * Deux formats existent selon la version du protocole WhatsApp :
+ *   1. un wrapper viewOnceMessage / V2 / V2Extension (parfois lui-même dans un
+ *      ephemeralMessage) contenant le média — le cas classique en conversation
+ *   2. un média NORMAL (image/vidéo) portant le flag viewOnce: true — WhatsApp
+ *      envoie parfois les vus uniques ainsi aux appareils liés
+ * Retourne { imageMessage } | { videoMessage } | null.
+ */
 function extractViewOnce(msg) {
   const m = msg.message || {};
-  const vo = m.viewOnceMessage || m.viewOnceMessageV2 || m.viewOnceMessageV2Extension;
-  if (!vo || !vo.message) return null;
-  return vo.message; // { imageMessage } | { videoMessage } | …
+  // 1) Wrapper viewOnce* (déballe aussi ephemeralMessage autour)
+  const inner = unwrapContent(m);
+  if (inner && inner !== m) {
+    if (inner.imageMessage || inner.videoMessage) return inner;
+  }
+  // 2) Média normal avec le flag viewOnce: true (nouveau format appareils liés)
+  if (m.imageMessage?.viewOnce) return { imageMessage: m.imageMessage };
+  if (m.videoMessage?.viewOnce) return { videoMessage: m.videoMessage };
+  return null;
 }
 
 /**
@@ -3482,8 +3537,9 @@ async function captureViewOnce(msg, key, remoteJid, sender, inner) {
 
   let buffer;
   try {
-    // Le média imbriqué du vu unique se télécharge comme un média normal
-    buffer = await downloadMediaMessage({ ...msg, message: inner }, 'buffer', {});
+    // Baileys déballe lui-même les wrappers viewOnce* (extractMessageContent) :
+    // on lui passe le message ORIGINAL, le média est téléchargé directement.
+    buffer = await downloadMediaMessage(msg, 'buffer', {});
   } catch (err) {
     debugLog(`[vuunique] téléchargement impossible : ${err.message}`);
     return;
