@@ -36,6 +36,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 import ai_service
+import brat_service
 import brixhub_service
 import pinterest_service
 import whatsapp_handler
@@ -687,6 +688,33 @@ def make_sticker():
         return Response(out.getvalue(), mimetype="image/webp")
     except Exception as exc:  # image corrompue / format inconnu
         return jsonify({"ok": False, "error": f"Conversion impossible : {exc}"}), 422
+
+
+# --------------------------------------------------------------------------- #
+#  Stickers brat — esthétique Charli XCX : fond blanc, texte minuscules noir,
+#  police condensée + grain. Généré par Pillow (backend/brat_service.py).
+# --------------------------------------------------------------------------- #
+@app.route("/api/brat", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def make_brat():
+    """
+    Transforme un texte en sticker brat (WebP 512×512, fond blanc).
+
+    Corps JSON : {"text": "votre texte"}. Utilisé par la commande .brat du
+    bot Node.js. La réponse est l'image WebP brute (Content-Type: image/webp).
+    """
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text", "") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "Texte manquant."}), 400
+    if len(text) > 600:
+        return jsonify({"ok": False, "error": "Texte trop long (max 600 caractères)."}), 400
+
+    webp = brat_service.render(text)
+    if not webp:
+        return jsonify({"ok": False, "error": "Rendu brat impossible."}), 422
+    return Response(webp, mimetype="image/webp")
 
 
 # --------------------------------------------------------------------------- #

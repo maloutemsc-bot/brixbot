@@ -833,6 +833,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .brat : texte → sticker brat (fond blanc, minuscules) ---
+  if (/^\.brat\b/i.test(trimmed)) {
+    debugLog(`[brat] commande : ${trimmed}`);
+    handleBratCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[brat] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande .clear : purge des messages de la conversation ---
   if (/^\.clear\b/i.test(trimmed)) {
     debugLog(`[clear] commande : ${trimmed}`);
@@ -3301,6 +3310,64 @@ async function handleMusicCommand(msg, remoteJid, body) {
     return handleLyricsCommand(msg, remoteJid, body);
   }
   return handleSpoCommand(msg, remoteJid, body);
+}
+
+/**
+ * .brat texte — transforme un texte en sticker brat (fond blanc, minuscules,
+ * police condensée + grain). Généré par le backend (Pillow) puis envoyé en
+ * sticker WebP. Sans argument, prend le texte du message cité (réponse .brat).
+ */
+async function handleBratCommand(msg, remoteJid, body) {
+  let text = body.replace(/^\.brat\s*/i, '').trim();
+  let citedBy = '';
+
+  // Pas de texte direct : on prend le message cité (réponse ".brat")
+  if (!text) {
+    const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+    const quoted = ctx.quotedMessage || null;
+    const quotedText = quoted?.conversation
+      || quoted?.extendedTextMessage?.text
+      || null;
+    if (quotedText) {
+      text = quotedText;
+      citedBy = ' (message cité)';
+    }
+  }
+
+  if (!text) {
+    return replyError(remoteJid,
+      '🤍 *Commande .brat*\n'
+      + 'Utilisation : `.brat votre texte`\n'
+      + 'Exemple : `.brat je suis en mode brat`\n'
+      + '— ou —\n'
+      + 'RÉPONDEZ à un message avec `.brat`.', msg);
+  }
+
+  if (text.length > 600) {
+    return replyError(remoteJid,
+      '❌ Texte trop long (600 caractères maximum).', msg);
+  }
+
+  try {
+    const { data } = await axios.post(`${FLASK_URL}/api/brat`, { text }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 30000,
+      responseType: 'arraybuffer',
+    });
+    if (!data || !data.length) {
+      throw new Error('réponse backend vide');
+    }
+    const sticker = Buffer.from(data);
+    await sock.sendMessage(remoteJid, { sticker }, { quoted: msg });
+    debugLog(`[brat] sticker envoyé${citedBy} (${sticker.length} octets) : ${text.slice(0, 60)}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🤍 [sticker brat] ${text.slice(0, 60)}`);
+  } catch (err) {
+    // Avec responseType arraybuffer, l'erreur backend (400/422) arrive en Buffer
+    const buf = err.response?.data;
+    const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
+    debugLog(`[brat] échec : ${detail}`);
+    return replyError(remoteJid, '❌ Impossible de créer le sticker brat. Réessayez.', msg);
+  }
 }
 
 /**
