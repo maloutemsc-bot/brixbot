@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, redirect, render_template, request, session
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -146,6 +146,35 @@ def admin():
 @app.route("/login")
 def login_page():
     return render_template("login.html", auth_enabled=AUTH_ENABLED)
+
+
+# --------------------------------------------------------------------------- #
+#  Site bratify local (self-host) — copié par fetch_bratify_site.py
+# --------------------------------------------------------------------------- #
+# Le générateur brat est servi EN LOCAL sous /bratify/ : le scraping Playwright
+# charge http://localhost/bratify/ au lieu du site distant → rendu 100 %
+# identique, aucune dépendance réseau, fonctionne même si bratify est down.
+BRATIFY_SITE_DIR = os.path.join(BASE_DIR, "bratify_site")
+
+
+@app.route("/bratify/")
+def bratify_home():
+    # On lit le fichier depuis le disque (pas send_from_directory : son objet
+    # Response est en mode "passthrough", impossible à modifier).
+    index_path = os.path.join(BRATIFY_SITE_DIR, "index.html")
+    if not os.path.exists(index_path):
+        return jsonify({"error": "Site bratify non copié. Lancer fetch_bratify_site.py."}), 404
+    with open(index_path, "rb") as fh:
+        html_bytes = fh.read()
+    # Le HTML copié référence certains assets en chemin ABSOLU (/_app/...) qui
+    # 404 sur notre serveur (le site est servi sous /bratify/). On les réécrit.
+    html_bytes = html_bytes.replace(b'href="/_app/', b'href="/bratify/_app/')
+    return Response(html_bytes, mimetype="text/html")
+
+
+@app.route("/bratify/<path:filename>")
+def bratify_files(filename):
+    return send_from_directory(BRATIFY_SITE_DIR, filename)
 
 
 @app.route("/health")

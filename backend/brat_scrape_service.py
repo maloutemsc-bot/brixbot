@@ -1,18 +1,21 @@
 """
-brat_scrape_service.py — Scraping du générateur brat officiel (bratify).
+brat_scrape_service.py — Rendu brat via le site bratify EN LOCAL (self-host).
 
-Charge la VRAIE page https://bratify.vercel.app/ dans un navigateur headless
-(Playwright + navigateur système : Chrome, Edge ou Chromium), sélectionne le
-preset "custom color" (fond blanc / texte noir), tape le texte demandé dans
-le contenteditable et clique sur le bouton "download" du site. Le PNG produit
-par le site (avec son post-traitement authentique : flou + double
-redimensionnement pixelisé nearestNeighbor) est récupéré puis converti en
-WebP pour WhatsApp.
+Le générateur brat (bratify.vercel.app, licence Unlicense) est copié en local
+par fetch_bratify_site.py et servi par le backend Flask sous /bratify/.
+Le scraping Playwright charge donc http://localhost/bratify/ — même site, même
+code, rendu 100 % identique, mais SANS aucune dépendance réseau (rapide et
+fiable même si bratify est indisponible).
+
+Étapes : preset "custom color" (fond blanc / texte noir), texte tapé dans le
+contenteditable, clic sur le bouton "download" du site → PNG authentique
+(flou + double redimensionnement pixelisé nearestNeighbor) → WebP WhatsApp.
 
 Fiabilité :
+  - Si le site local est absent → repli sur le site DISTANT (bratify.vercel.app)
   - Si playwright ou un navigateur est absent → available() = False
-  - render() ne lève JAMAIS : retourne None en cas d'échec (le backend retombe
-    alors sur la génération locale brat_service.py).
+  - render() ne lève JAMAIS : retourne None (le backend retombe alors sur la
+    génération locale brat_service.py).
   - Timeout global : un .brat ne doit jamais bloquer le bot.
 """
 
@@ -62,6 +65,23 @@ def _find_browser():
     return None
 
 
+def _site_local_available():
+    """Vrai si le site bratify est copié en local (self-host)."""
+    site = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "bratify_site", "index.html"
+    )
+    return os.path.exists(site)
+
+
+# URL du site bratify : local en priorité, distant en secours.
+# Le port local suit la variable PORT du backend (comme app.run).
+def _site_url():
+    if not _site_local_available():
+        return "https://bratify.vercel.app/"
+    port = int(os.environ.get("PORT", "5000") or 5000)
+    return f"http://127.0.0.1:{port}/bratify/"
+
+
 def available():
     """Vrai si playwright ET un navigateur sont présents."""
     return PLAYWRIGHT_OK and _find_browser() is not None
@@ -83,7 +103,7 @@ async def _render_async(text, browser_path):
                 accept_downloads=True,
             )
             await page.goto(
-                "https://bratify.vercel.app/",
+                _site_url(),
                 timeout=20000,
                 wait_until="domcontentloaded",
             )

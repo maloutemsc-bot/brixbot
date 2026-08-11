@@ -42,6 +42,15 @@ if exist "backend\fetch_brat_font.py" (
   .venv\Scripts\python.exe backend\fetch_brat_font.py >nul 2>&1 || echo [OK] .brat : police libre utilisee
 )
 
+rem Site bratify en LOCAL (self-host) : copie le generateur dans le backend
+rem pour un rendu 100%% identique SANS dependance Internet. NON FATAL : si la
+rem copie echoue, le scraping bascule sur le site distant.
+if exist "backend\fetch_bratify_site.py" (
+  if not exist "backend\bratify_site\index.html" (
+    .venv\Scripts\python.exe backend\fetch_bratify_site.py >nul 2>&1 || echo [OK] .brat : site distant utilise
+  )
+)
+
 rem Scraping .brat : le rendu authentique vient du VRAI site (bratify.vercel.app)
 rem via Playwright + navigateur SYSTEME (Chrome ou Edge detectes automatiquement).
 rem Aucune installation supplementaire sur Windows (Chrome/Edge deja presents).
