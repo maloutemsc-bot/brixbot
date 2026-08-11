@@ -39,7 +39,9 @@ import ai_service
 import brat_scrape_service
 import brat_service
 import brixhub_service
+import imagine_service
 import pinterest_service
+import shazam_service
 import whatsapp_handler
 from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, init_db, utc_now_iso
 
@@ -724,6 +726,68 @@ def make_sticker():
 #  Stickers brat — esthétique Charli XCX : fond blanc, texte minuscules noir,
 #  police condensée + grain. Généré par Pillow (backend/brat_service.py).
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+#  Images IA — commande .imagine (Pollinations, gratuit sans clé)
+# --------------------------------------------------------------------------- #
+@app.route("/api/imagine", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def imagine_image():
+    """
+    Génère une image par IA (Pollinations) à partir d'une description.
+
+    Corps JSON : {"prompt": "un chat ninja dans l'espace"}. Utilisé par la
+    commande .imagine du bot Node.js. La réponse est l'image brute
+    (Content-Type: image/jpeg).
+    """
+    data = request.get_json(silent=True) or {}
+    prompt = str(data.get("prompt", "") or "").strip()
+    if not prompt:
+        return jsonify({"ok": False, "error": "Description manquante."}), 400
+    if len(prompt) > 500:
+        return jsonify({"ok": False, "error": "Description trop longue (500 caractères max)."}), 400
+
+    image = imagine_service.generate(prompt)
+    if not image:
+        return jsonify({"ok": False, "error": "Génération impossible. Réessayez plus tard."}), 502
+    return Response(image, mimetype="image/jpeg")
+
+
+# --------------------------------------------------------------------------- #
+#  Reconnaissance musicale — commande .shazam (shazamio, gratuit sans clé)
+# --------------------------------------------------------------------------- #
+@app.route("/api/shazam", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def shazam_recognize():
+    """
+    Identifie la chanson contenue dans l'audio reçu (WAV).
+
+    Corps JSON : {"audio": "<base64 WAV>"}. Utilisé par la commande .shazam
+    du bot Node.js (qui convertit le vocal ogg/opus en WAV avec ffmpeg-static).
+    """
+    data = request.get_json(silent=True) or {}
+    audio_b64 = str(data.get("audio", "") or "")
+    if not audio_b64:
+        return jsonify({"ok": False, "error": "Aucun audio reçu."}), 400
+    # Garde-fou : base64 ≈ 4/3 du binaire → 28 Mo ≈ 21 Mo d'audio
+    if len(audio_b64) > 28 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Audio trop volumineux."}), 400
+
+    if not shazam_service.available():
+        return jsonify({"ok": False,
+                        "error": "shazamio n'est pas installé sur le backend (requirements.txt)."}), 503
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+    except (binascii.Error, ValueError):
+        return jsonify({"ok": False, "error": "Audio invalide."}), 400
+    if not audio_bytes:
+        return jsonify({"ok": False, "error": "Audio vide."}), 400
+
+    return jsonify(shazam_service.recognize(audio_bytes))
+
+
 @app.route("/api/brat", methods=["POST"])
 @require_bot_key
 @limiter.limit("30 per minute")

@@ -16,3 +16,6 @@ fonttools==4.53.1
 # Chromium), aucun téléchargement Chromium requis. Optionnel : si absent, .brat
 # retombe sur la génération locale brat_service.py.
 playwright==1.46.0
+# shazamio : reconnaissance musicale (.shazam) — API Shazam reverse-engineered,
+# gratuite sans clé. Le décodage ogg→wav est fait côté bot (ffmpeg-static).
+shazamio==0.8.1

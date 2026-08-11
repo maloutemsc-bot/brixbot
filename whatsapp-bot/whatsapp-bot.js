@@ -36,6 +36,15 @@ try {
   // sur la conversion via le backend Flask (Pillow → WebP).
   console.warn('⚠️ sharp indisponible : .sticker utilisera la conversion via le backend (Pillow).');
 }
+// ffmpeg-static (binaire ffmpeg embarqué) : utilisé par .shazam pour convertir
+// un vocal ogg/opus en WAV. OPTIONNEL : .shazam affiche une erreur claire s'il
+// manque (installation npm incomplète), sans jamais crasher le bot.
+let ffmpegStatic = null;
+try {
+  ffmpegStatic = require('ffmpeg-static');
+} catch (_) {
+  console.warn('⚠️ ffmpeg-static indisponible : .shazam sera désactivé.');
+}
 // Téléchargement YouTube via yt-dlp (binaire Python) : ytdl-core ne peut plus
 // décrypter les URLs de flux de YouTube actuel ("Could not parse decipher").
 // yt-dlp est toujours à jour et gère vidéo ET audio sans clé API.
@@ -807,7 +816,7 @@ async function handleMessage(msg) {
   }
 
   // --- Commandes d'administration de groupe (.kick / .mute / .warn / .welcome…) ---
-  if (/^\.(kick|mute|unmute|promote|demote|tagall|link|close|open|warn|unwarn|warns|resetwarn|welcome|antilink|revoke)\b/i.test(trimmed)) {
+  if (/^\.(kick|mute|unmute|promote|demote|tagall|hidetag|link|close|open|warn|unwarn|warns|resetwarn|welcome|antilink|revoke)\b/i.test(trimmed)) {
     debugLog(`[admin] commande : ${trimmed}`);
     handleGroupAdminCommand(msg, remoteJid, sender, trimmed, isGroup).catch((err) => {
       debugLog(`[admin] erreur : ${err.message}`);
@@ -838,6 +847,24 @@ async function handleMessage(msg) {
     debugLog(`[brat] commande : ${trimmed}`);
     handleBratCommand(msg, remoteJid, trimmed).catch((err) => {
       debugLog(`[brat] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .imagine : génération d'image par IA (gratuit) ---
+  if (/^\.(imagine|img)\b/i.test(trimmed)) {
+    debugLog(`[imagine] commande : ${trimmed}`);
+    handleImagineCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[imagine] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .shazam : identification musicale d'un vocal/audio cité ---
+  if (/^\.shazam\b/i.test(trimmed)) {
+    debugLog(`[shazam] commande : ${trimmed}`);
+    handleShazamCommand(msg, remoteJid).catch((err) => {
+      debugLog(`[shazam] erreur : ${err.message}`);
     });
     return;
   }
@@ -2144,7 +2171,8 @@ async function handleGroupAdminCommand(msg, remoteJid, sender, body, isGroup) {
     case '.unmute': return handleMuteToggle(msg, remoteJid, body, false);
     case '.promote': return handlePromoteDemote(msg, remoteJid, body, 'promote');
     case '.demote': return handlePromoteDemote(msg, remoteJid, body, 'demote');
-    case '.tagall': return handleTagAll(msg, remoteJid);
+    case '.tagall': return handleTagAll(msg, remoteJid, body, false);
+    case '.hidetag': return handleTagAll(msg, remoteJid, body, true);
     case '.link': return handleGroupLink(msg, remoteJid);
     case '.close': return handleGroupSetting(msg, remoteJid, 'announcement');
     case '.open': return handleGroupSetting(msg, remoteJid, 'not_announcement');
@@ -2266,8 +2294,15 @@ async function handlePromoteDemote(msg, remoteJid, body, action) {
   }
 }
 
-/** .tagall — mentionne tous les membres du groupe. */
-async function handleTagAll(msg, remoteJid) {
+/**
+ * .tagall — mentionne tous les membres du groupe.
+ *   `.tagall`            → liste des membres
+ *   `.tagall message`    → message + liste des membres
+ * .hidetag — idem mais SANS afficher la liste (message seul, mentions invisibles).
+ *   `.hidetag message`
+ */
+async function handleTagAll(msg, remoteJid, body, hidden) {
+  const arg = body.replace(/^\.(?:tagall|hidetag)\s*/i, '').trim();
   let meta;
   try {
     meta = await sock.groupMetadata(remoteJid);
@@ -2282,18 +2317,29 @@ async function handleTagAll(msg, remoteJid) {
   if (!members.length) {
     return replyError(remoteJid, '👥 Aucun membre à mentionner.', msg);
   }
+
+  let text;
+  if (hidden) {
+    // .hidetag : le message seul, sans liste — les mentions sont invisibles
+    text = arg || `📣 Message à tous les membres (${members.length})`;
+  } else if (arg) {
+    // .tagall avec message : le message + la liste des membres
+    text = `${arg}\n\n👥 *Tous les membres* (${members.length})\n`
+      + members.map((id) => `• @${jidLocal(id)}`).join('\n');
+  } else {
+    // .tagall seul : la liste des membres
+    text = `👥 *Tous les membres* (${members.length})\n`
+      + members.map((id) => `• @${jidLocal(id)}`).join('\n');
+  }
+
   try {
-    await sock.sendMessage(remoteJid, {
-      text: `👥 *Tous les membres* (${members.length})\n`
-        + members.map((id) => `• @${jidLocal(id)}`).join('\n'),
-      mentions: members,
-    }, { quoted: msg });
+    await sock.sendMessage(remoteJid, { text, mentions: members }, { quoted: msg });
   } catch (err) {
-    debugLog(`[admin] tagall envoi impossible : ${err.message}`);
+    debugLog(`[admin] ${hidden ? 'hidetag' : 'tagall'} envoi impossible : ${err.message}`);
     return replyError(remoteJid, '❌ Impossible d\'envoyer la mention à tous.', msg);
   }
-  debugLog(`[admin] tagall : ${members.length} membres`);
-  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👥 [tagall ${members.length}]`);
+  debugLog(`[admin] ${hidden ? 'hidetag' : 'tagall'} : ${members.length} membres`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ${hidden ? '🤫 [hidetag]' : '👥 [tagall]'} ${members.length}`);
 }
 
 /** .link — génère un lien d'invitation pour le groupe. */
@@ -3370,6 +3416,188 @@ async function handleBratCommand(msg, remoteJid, body) {
     debugLog(`[brat] échec : ${detail}`);
     return replyError(remoteJid, '❌ Impossible de créer le sticker brat. Réessayez.', msg);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .imagine — génération d'image par IA (Pollinations, gratuit)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * .imagine — génère une image par IA à partir d'une description.
+ *
+ * Appelle le backend (/api/imagine) qui centralise l'appel à Pollinations
+ * (gratuit, sans clé API) et renvoie l'image JPEG. Le bot l'envoie telle
+ * quelle dans la conversation.
+ */
+async function handleImagineCommand(msg, remoteJid, body) {
+  const prompt = body.replace(/^\.(?:imagine|img)\s*/i, '').trim();
+  if (!prompt) {
+    return replyError(remoteJid,
+      '🎨 *Commande .imagine*\n'
+      + 'Utilisation : `.imagine un chat ninja dans l\'espace`\n'
+      + 'L\'IA génère une image unique et gratuite.', msg);
+  }
+  if (prompt.length > 500) {
+    return replyError(remoteJid, '❌ Description trop longue (500 caractères max).', msg);
+  }
+
+  // Message de statut pendant la génération (peut prendre 10-30 s)
+  if (sock) sock.sendMessage(remoteJid, { text: '🎨 Génération de l\'image en cours…' }).catch(() => {});
+
+  let image;
+  try {
+    const { data } = await axios.post(`${FLASK_URL}/api/imagine`, { prompt }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 150000,
+      responseType: 'arraybuffer',
+    });
+    if (!data || !data.length) throw new Error('réponse backend vide');
+    image = Buffer.from(data);
+  } catch (err) {
+    // Avec responseType arraybuffer, l'erreur backend (400/502) arrive en Buffer
+    const buf = err.response?.data;
+    const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
+    debugLog(`[imagine] échec : ${detail}`);
+    return replyError(remoteJid, '❌ Impossible de générer l\'image. Réessayez plus tard.', msg);
+  }
+
+  try {
+    await sock.sendMessage(remoteJid, {
+      image,
+      caption: `🎨 *${prompt.slice(0, 100)}*\n_Image générée par IA (Pollinations)_`,
+    }, { quoted: msg });
+    debugLog(`[imagine] image envoyée (${image.length} octets) : ${prompt.slice(0, 60)}`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎨 [image IA] ${prompt.slice(0, 60)}`);
+  } catch (err) {
+    debugLog(`[imagine] envoi impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Image générée mais envoi impossible.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .shazam — identification musicale (shazamio, gratuit)            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Convertit des octets audio (ogg/opus, m4a…) en WAV 16 kHz mono via
+ * ffmpeg-static (binaire embarqué, aucun ffmpeg système requis).
+ * Résout avec le Buffer WAV, rejette en cas d'échec.
+ */
+function convertToWav(inputBuffer) {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegStatic) {
+      return reject(new Error('ffmpeg-static non installé'));
+    }
+    const stamp = Date.now();
+    const tmpIn = path.join(MEDIA_DIR, `shazam-in-${stamp}.ogg`);
+    const tmpOut = path.join(MEDIA_DIR, `shazam-out-${stamp}.wav`);
+    fs.writeFileSync(tmpIn, inputBuffer);
+    const cleanup = () => { fs.unlink(tmpIn, () => {}); fs.unlink(tmpOut, () => {}); };
+    execFile(ffmpegStatic,
+      ['-y', '-i', tmpIn, '-ac', '1', '-ar', '16000', '-t', '30', tmpOut],
+      (err) => {
+        if (err) {
+          cleanup(); // supprime AUSSI un éventuel .wav partiel créé avant l'échec
+          return reject(err);
+        }
+        fs.readFile(tmpOut, (rerr, wav) => {
+          cleanup();
+          if (rerr) return reject(rerr);
+          resolve(wav);
+        });
+      });
+  });
+}
+
+/**
+ * .shazam — identifie la chanson dans un vocal/audio CITÉ.
+ *
+ * Répondez à une note vocale avec `.shazam` : le bot convertit l'audio en
+ * WAV (ffmpeg-static), l'envoie au backend (/api/shazam) qui l'identifie
+ * via Shazam (gratuit, sans clé) et affiche titre, artiste, pochette et lien.
+ */
+async function handleShazamCommand(msg, remoteJid) {
+  const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  const quotedAudio = quoted?.audioMessage;
+
+  if (!quotedAudio) {
+    return replyError(remoteJid,
+      '🎵 *Commande .shazam*\n'
+      + 'RÉPONDEZ à une note vocale ou un audio avec `.shazam`\n'
+      + 'pour identifier la chanson (titre, artiste, pochette).', msg);
+  }
+
+  // Message de statut pendant l'identification
+  if (sock) sock.sendMessage(remoteJid, { text: '🎵 Identification de la musique…' }).catch(() => {});
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage({ ...msg, message: quoted }, 'buffer', {});
+  } catch (err) {
+    debugLog(`[shazam] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger l\'audio. Réessayez.', msg);
+  }
+  if (buffer.length > 20 * 1024 * 1024) {
+    return replyError(remoteJid, '❌ Audio trop volumineux (20 Mo max).', msg);
+  }
+
+  let wav;
+  try {
+    wav = await convertToWav(buffer);
+  } catch (err) {
+    debugLog(`[shazam] conversion impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Conversion audio impossible (ffmpeg-static manquant ?).', msg);
+  }
+
+  let data;
+  try {
+    const { data: res } = await axios.post(`${FLASK_URL}/api/shazam`, {
+      audio: wav.toString('base64'),
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 60000,
+    });
+    data = res;
+  } catch (err) {
+    debugLog(`[shazam] erreur backend : ${err.message}`);
+    return replyError(remoteJid, '❌ Erreur lors de l\'identification. Réessayez.', msg);
+  }
+
+  if (!data?.ok || !data.title) {
+    debugLog(`[shazam] refusé : ${data?.error || 'inconnu'}`);
+    return replyError(remoteJid, `❌ ${data?.error || 'Identification impossible.'}`, msg);
+  }
+
+  // Construction du message de résultat
+  const lines = [
+    '🎵 *Chanson identifiée*',
+    '',
+    `🎶 ${data.title}`,
+    `👤 ${data.artist || 'Artiste inconnu'}`,
+  ];
+  if (data.album) lines.push(`💿 ${data.album}`);
+  if (data.link) lines.push('', `🔗 ${data.link}`);
+  const text = lines.join('\n');
+
+  // Pochette : envoyée en image avec le texte en légende si possible
+  if (data.cover_url && sock) {
+    try {
+      const imgRes = await axios.get(data.cover_url, { timeout: 20000, responseType: 'arraybuffer' });
+      const cover = Buffer.from(imgRes.data);
+      if (cover && cover.length) {
+        await sock.sendMessage(remoteJid, { image: cover, caption: text }, { quoted: msg });
+        debugLog(`[shazam] identifié : ${data.title} — ${data.artist} (avec pochette)`);
+        transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎵 [shazam] ${data.title} — ${data.artist}`);
+        return;
+      }
+    } catch (err) {
+      debugLog(`[shazam] pochette indisponible : ${err.message}`);
+    }
+  }
+
+  await sendChunks(remoteJid, text, msg);
+  debugLog(`[shazam] identifié : ${data.title} — ${data.artist}`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🎵 [shazam] ${data.title} — ${data.artist}`);
 }
 
 /**
