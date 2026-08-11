@@ -209,7 +209,7 @@ Guide complet : [`termux/README-TERMUX.md`](termux/README-TERMUX.md)
 ```bash
 # Sur le téléphone (Termux) :
 pkg update && pkg upgrade -y
-pkg install -y python nodejs-lts git nano termux-api termux-boot yt-dlp curl
+pkg install -y python nodejs-lts git nano termux-api termux-boot yt-dlp curl ffmpeg
 
 git clone https://github.com/VOTRE_COMPTE/brixbot.git
 cd brixbot
@@ -226,8 +226,10 @@ cp termux/boot.sh ~/.termux/boot/brixbot.sh
 
 Le panneau est accessible depuis un PC du même Wi-Fi : `http://IP_DU_TEL:5000/admin`
 
-> ℹ️ Sur Android, la commande `.sticker` est désactivée (bibliothèque native
-> `sharp` non installable) — tout le reste fonctionne normalement.
+> ℹ️ Sur Android : `.sticker` est désactivé (bibliothèque native `sharp` non
+> installable) — tout le reste fonctionne normalement. Pour `.shazam`, installez
+> `pkg install ffmpeg` (fait automatiquement par `install.sh`) : le bot l'utilise
+> pour convertir les vocaux, aucun binaire npm requis.
 
 ---
 

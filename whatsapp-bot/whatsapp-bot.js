@@ -36,14 +36,35 @@ try {
   // sur la conversion via le backend Flask (Pillow → WebP).
   console.warn('⚠️ sharp indisponible : .sticker utilisera la conversion via le backend (Pillow).');
 }
-// ffmpeg-static (binaire ffmpeg embarqué) : utilisé par .shazam pour convertir
-// un vocal ogg/opus en WAV. OPTIONNEL : .shazam affiche une erreur claire s'il
-// manque (installation npm incomplète), sans jamais crasher le bot.
+// ffmpeg pour .shazam (conversion vocal ogg/opus → WAV). Deux sources possibles :
+//  1. le ffmpeg SYSTÈME dans le PATH (Termux : `pkg install ffmpeg`) — prioritaire
+//  2. ffmpeg-static (binaire embarqué npm, dispo sur Windows)
+// Les deux sont OPTIONNELS : .shazam affiche une erreur claire si aucun n'existe,
+// sans jamais crasher le bot. ffmpeg-static est en optionalDependencies pour ne
+// pas bloquer npm install sur les architectures sans binaire (ex: certains
+// téléphones Android).
 let ffmpegStatic = null;
 try {
   ffmpegStatic = require('ffmpeg-static');
-} catch (_) {
-  console.warn('⚠️ ffmpeg-static indisponible : .shazam sera désactivé.');
+} catch (_) { /* absent : on comptera sur le ffmpeg système */ }
+
+let ffmpegCmd = null;      // commande ffmpeg résolue : 'ffmpeg' (PATH) ou chemin static
+let ffmpegPromise = null;  // évite les résolutions concurrentes
+/** Résout la commande ffmpeg (système d'abord, ffmpeg-static ensuite). */
+function resolveFfmpeg() {
+  if (ffmpegCmd) return Promise.resolve(ffmpegCmd);
+  if (ffmpegPromise) return ffmpegPromise;
+  ffmpegPromise = new Promise((resolve) => {
+    // 1) ffmpeg système : on teste sa présence réellement (execFile)
+    execFile('ffmpeg', ['-version'], { timeout: 8000 }, (err) => {
+      if (!err) { ffmpegCmd = 'ffmpeg'; return resolve('ffmpeg'); }
+      // 2) sinon le binaire embarqué npm (Windows)
+      if (ffmpegStatic) { ffmpegCmd = ffmpegStatic; return resolve(ffmpegStatic); }
+      debugLog('[shazam] aucun ffmpeg trouvé (ni PATH ni ffmpeg-static)');
+      resolve(null);
+    });
+  }).finally(() => { ffmpegPromise = null; });
+  return ffmpegPromise;
 }
 // Téléchargement YouTube via yt-dlp (binaire Python) : ytdl-core ne peut plus
 // décrypter les URLs de flux de YouTube actuel ("Could not parse decipher").
@@ -3483,17 +3504,18 @@ async function handleImagineCommand(msg, remoteJid, body) {
  * ffmpeg-static (binaire embarqué, aucun ffmpeg système requis).
  * Résout avec le Buffer WAV, rejette en cas d'échec.
  */
-function convertToWav(inputBuffer) {
+async function convertToWav(inputBuffer) {
+  const ffmpeg = await resolveFfmpeg();
+  if (!ffmpeg) {
+    throw new Error('ffmpeg introuvable (pkg install ffmpeg sur Termux)');
+  }
+  const stamp = Date.now();
+  const tmpIn = path.join(MEDIA_DIR, `shazam-in-${stamp}.ogg`);
+  const tmpOut = path.join(MEDIA_DIR, `shazam-out-${stamp}.wav`);
+  fs.writeFileSync(tmpIn, inputBuffer);
+  const cleanup = () => { fs.unlink(tmpIn, () => {}); fs.unlink(tmpOut, () => {}); };
   return new Promise((resolve, reject) => {
-    if (!ffmpegStatic) {
-      return reject(new Error('ffmpeg-static non installé'));
-    }
-    const stamp = Date.now();
-    const tmpIn = path.join(MEDIA_DIR, `shazam-in-${stamp}.ogg`);
-    const tmpOut = path.join(MEDIA_DIR, `shazam-out-${stamp}.wav`);
-    fs.writeFileSync(tmpIn, inputBuffer);
-    const cleanup = () => { fs.unlink(tmpIn, () => {}); fs.unlink(tmpOut, () => {}); };
-    execFile(ffmpegStatic,
+    execFile(ffmpeg,
       ['-y', '-i', tmpIn, '-ac', '1', '-ar', '16000', '-t', '30', tmpOut],
       (err) => {
         if (err) {
@@ -3546,7 +3568,9 @@ async function handleShazamCommand(msg, remoteJid) {
     wav = await convertToWav(buffer);
   } catch (err) {
     debugLog(`[shazam] conversion impossible : ${err.message}`);
-    return replyError(remoteJid, '❌ Conversion audio impossible (ffmpeg-static manquant ?).', msg);
+    return replyError(remoteJid,
+      '❌ Conversion audio impossible (ffmpeg introuvable).\n'
+      + 'Termux : `pkg install ffmpeg` puis relancez le bot.', msg);
   }
 
   let data;

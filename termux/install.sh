@@ -44,6 +44,20 @@ else
   echo "  ⚠️ Aucun navigateur : .brat utilisera le rendu local (fallback)"
 fi
 
+# ffmpeg pour .shazam (conversion vocal ogg/opus → WAV avant reconnaissance).
+# Le paquet Termux fournit le vrai binaire dans le PATH : le bot le détecte
+# automatiquement (aucun binaire npm requis — ffmpeg-static n'existe pas sur
+# toutes les architectures Android). NON FATAL : .shazam explique la commande.
+echo "[1e/3] ffmpeg pour .shazam (reconnaissance musicale)…"
+if command -v pkg >/dev/null 2>&1 && ! command -v ffmpeg >/dev/null 2>&1; then
+  pkg install -y ffmpeg >/dev/null 2>&1 || echo "  ⚠️ ffmpeg : échec — .shazam affichera la marche à suivre"
+fi
+if command -v ffmpeg >/dev/null 2>&1; then
+  echo "  ✅ ffmpeg présent : .shazam fonctionne"
+else
+  echo "  ⚠️ ffmpeg absent : .shazam indisponible (lancez pkg install ffmpeg)"
+fi
+
 echo "  ✅ Pinterest (.pin) : API directe intégrée — aucune installation supplémentaire"
 echo "  ✅ Stickers (.sticker) : conversion via le backend (Pillow + WebP)"
 
