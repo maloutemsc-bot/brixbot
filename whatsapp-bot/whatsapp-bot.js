@@ -761,7 +761,7 @@ async function handleMessage(msg) {
   // --- Commandes médias gérées directement par le bot (.sticker / .yt / .extract) ---
   if (/^\.(sticker|yt|audio|extract)\b/i.test(trimmed)) {
     debugLog(`[media] commande locale : ${trimmed}`);
-    handleMediaCommand(msg, key, trimmed).catch((err) => {
+    handleMediaCommand(msg, key, trimmed, sender).catch((err) => {
       debugLog(`[media] erreur : ${err.message}`);
     });
     return;
@@ -987,13 +987,13 @@ async function replyError(remoteJid, text, quoted) {
 /**
  * Point d'entrée des commandes médias : .sticker et .yt / .audio.
  */
-async function handleMediaCommand(msg, key, body) {
+async function handleMediaCommand(msg, key, body, sender) {
   const remoteJid = key.remoteJid;
   if (/^\.sticker\b/i.test(body)) {
     return handleStickerCommand(msg, remoteJid);
   }
   if (/^\.extract\b/i.test(body)) {
-    return handleExtractCommand(msg, remoteJid);
+    return handleExtractCommand(msg, remoteJid, sender);
   }
   return handleYtCommand(msg, remoteJid, body);
 }
@@ -1077,7 +1077,7 @@ async function handleStickerCommand(msg, remoteJid) {
  * avec la légende `.extract` est également acceptée. La note vocale est
  * renvoyée telle quelle (ptt conservé).
  */
-async function handleExtractCommand(msg, remoteJid) {
+async function handleExtractCommand(msg, remoteJid, sender) {
   const current = msg.message || {};
   const ctx = current.extendedTextMessage?.contextInfo || {};
   const quoted = ctx.quotedMessage || null;
@@ -1170,6 +1170,22 @@ async function handleExtractCommand(msg, remoteJid) {
     debugLog(`[extract] envoi impossible : ${err.message}`);
     return replyError(remoteJid, '❌ Envoi du média impossible.', msg);
   }
+
+  // Archive le média extrait dans la galerie du panneau (silencieux, non bloquant :
+  // une panne de la galerie ne casse jamais l'envoi). Placé APRÈS le téléchargement
+  // mais AVANT l'envoi échoué : même si le renvoi WhatsApp échoue (média expiré),
+  // le média est quand même archivé — "tout ce que je .extract se retrouve dans
+  // la galerie".
+  const gMedia = image || video || audio || doc || sticker;
+  const gType = video ? 'video' : (audio ? 'audio' : (doc ? 'document' : 'image'));
+  saveToGallery(
+    buffer,
+    gType,
+    gMedia?.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
+    ctx.participant || sender,
+    remoteJid,
+    image?.caption || video?.caption || doc?.fileName || ''
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -3535,6 +3551,32 @@ function extractViewOnce(msg) {
  * message envoyé. Seul un journal de débogage local (bot-messages.log) garde
  * une trace discrète de la capture.
  */
+/**
+ * Enregistre un média dans la galerie du panneau (endpoint interne du backend).
+ *
+ * Silencieux et non bloquant : une erreur ne laisse qu'un log local, elle ne
+ * casse jamais le traitement en cours (ex: envoi d'un .extract).
+ */
+async function saveToGallery(buffer, mediaType, mime, sender, chat, caption) {
+  try {
+    await axios.post(`${FLASK_URL}/api/gallery/save`, {
+      media: buffer.toString('base64'),
+      media_type: mediaType,
+      mime: mime || '',
+      sender: sender || chat,
+      chat,
+      caption: caption || '',
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 30000,
+    });
+    return true;
+  } catch (err) {
+    debugLog(`[galerie] enregistrement impossible : ${err.message}`);
+    return false;
+  }
+}
+
 async function captureViewOnce(msg, key, remoteJid, sender, inner) {
   const image = inner.imageMessage;
   const video = inner.videoMessage;
@@ -3559,22 +3601,17 @@ async function captureViewOnce(msg, key, remoteJid, sender, inner) {
   }
 
   const media = image || video;
-  try {
-    await axios.post(`${FLASK_URL}/api/gallery/save`, {
-      media: buffer.toString('base64'),
-      media_type: video ? 'video' : 'image',
-      mime: media.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
-      sender: sender || remoteJid,
-      chat: remoteJid,
-      caption: media.caption || '',
-    }, {
-      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
-      timeout: 30000,
-    });
-    debugLog(`[vuunique] sauvegardé en galerie (${buffer.length} octets) — silencieux`);
-  } catch (err) {
-    debugLog(`[vuunique] envoi au backend impossible : ${err.message}`);
-  }
+  const ok = await saveToGallery(
+    buffer,
+    video ? 'video' : 'image',
+    media.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
+    sender,
+    remoteJid,
+    media.caption || ''
+  );
+  debugLog(ok
+    ? `[vuunique] sauvegardé en galerie (${buffer.length} octets) — silencieux`
+    : '[vuunique] échec de sauvegarde en galerie');
 }
 
 /* -------------------------------------------------------------------------- */

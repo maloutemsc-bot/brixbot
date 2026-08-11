@@ -464,13 +464,22 @@
       const grid = $('#gallery-grid');
 
       if (!data.items.length) {
-        grid.innerHTML = '<p class="gallery-empty">📭 Aucun média "vu unique" capturé pour le moment.</p>';
+        grid.innerHTML = '<p class="gallery-empty">📭 Aucun média capturé pour le moment.</p>';
       } else {
+        const BADGES = { image: '🖼 Image', video: '🎬 Vidéo', audio: '🎵 Audio', document: '📄 Document' };
         grid.innerHTML = data.items.map((item) => {
-          const badge = item.media_type === 'video' ? '🎬 Vidéo' : '🖼 Image';
-          const media = item.media_type === 'video'
-            ? `<video src="${esc(item.url)}" muted loop playsinline></video>`
-            : `<img src="${esc(item.url)}" alt="vu unique" loading="lazy">`;
+          const badge = BADGES[item.media_type] || '🖼 Image';
+          let media;
+          if (item.media_type === 'video') {
+            media = `<video src="${esc(item.url)}" muted loop playsinline></video>`;
+          } else if (item.media_type === 'audio') {
+            // stopPropagation : cliquer sur ▶ ne doit pas ouvrir le lightbox
+            media = `<audio src="${esc(item.url)}" controls preload="none" onclick="event.stopPropagation()"></audio>`;
+          } else if (item.media_type === 'document') {
+            media = `<div class="gallery-doc" onclick="event.stopPropagation()">📄 ${esc(item.caption || 'document')}</div>`;
+          } else {
+            media = `<img src="${esc(item.url)}" alt="média" loading="lazy">`;
+          }
           const sender = String(item.sender || '').split('@')[0];
           return `
           <div class="gallery-item" data-id="${item.id}" data-url="${esc(item.url)}" data-type="${esc(item.media_type)}">

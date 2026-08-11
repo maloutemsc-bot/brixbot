@@ -816,11 +816,11 @@ def make_brat():
 
 
 # --------------------------------------------------------------------------- #
-#  Galerie "vu unique" — médias capturés silencieusement
+#  Galerie média — vus uniques capturés silencieusement + médias .extract
 # --------------------------------------------------------------------------- #
-# Les fichiers vivent dans backend/gallery/ (gitignoré). L'expéditeur d'une
-# image/vidéo "vu unique" n'est JAMAIS notifié : le bot télécharge à la
-# réception, enregistre, et ne répond rien.
+# Les fichiers vivent dans backend/gallery/ (gitignoré). Deux sources : les
+# images/vidéos "vu unique" (le bot télécharge à la réception, enregistre, ne
+# répond rien) et les médias extraits par la commande .extract du bot.
 GALLERY_DIR = os.path.join(BASE_DIR, "gallery")
 os.makedirs(GALLERY_DIR, exist_ok=True)
 
@@ -829,6 +829,18 @@ _GALLERY_EXT = {
     "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
     "image/gif": ".gif", "image/heic": ".heic",
     "video/mp4": ".mp4", "video/quicktime": ".mov", "video/3gpp": ".3gp",
+    "audio/ogg": ".ogg", "audio/opus": ".ogg", "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+    "audio/wav": ".wav", "audio/webm": ".webm", "audio/amr": ".amr",
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/plain": ".txt",
+    "application/zip": ".zip",
+    "application/vnd.android.package-archive": ".apk",
+    "application/octet-stream": ".bin",
 }
 
 
@@ -858,10 +870,15 @@ def gallery_save():
     if not media_bytes:
         return jsonify({"ok": False, "error": "Média vide."}), 400
 
-    media_type = "video" if str(data.get("media_type", "image")) == "video" else "image"
-    mime = str(data.get("mime", "") or "").lower()
+    media_type = str(data.get("media_type", "image") or "image")
+    if media_type not in ("image", "video", "audio", "document"):
+        media_type = "image"
+    # MIME nettoyé de ses paramètres (ex: "audio/ogg; codecs=opus" → "audio/ogg")
+    mime = str(data.get("mime", "") or "").lower().split(";")[0].strip()
     if mime not in _GALLERY_EXT:
-        mime = "video/mp4" if media_type == "video" else "image/jpeg"
+        # Document inconnu → .bin (jamais .pdf : on ne fausse pas le type réel)
+        mime = {"video": "video/mp4", "audio": "audio/ogg",
+                "document": "application/octet-stream"}.get(media_type, "image/jpeg")
     ext = _GALLERY_EXT[mime]
 
     # Nom de fichier sécurisé : jamais construit depuis une entrée client
@@ -916,7 +933,7 @@ def gallery_list():
 
     query = GalleryItem.query
     media_type = request.args.get("type")
-    if media_type in ("image", "video"):
+    if media_type in ("image", "video", "audio", "document"):
         query = query.filter_by(media_type=media_type)
     total = query.count()
     pages = max(1, (total + per_page - 1) // per_page)

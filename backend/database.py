@@ -209,10 +209,11 @@ class AILog(db.Model):
 # --------------------------------------------------------------------------- #
 class GalleryItem(db.Model):
     """
-    Média capturé : image ou vidéo reçue en "vu unique" sur WhatsApp.
+    Média capturé : image/vidéo "vu unique" OU média extrait par .extract.
 
-    Le bot la télécharge à la réception (avant que WhatsApp ne la supprime)
-    et l'enregistre ici, sans rien répondre à l'expéditeur. Le fichier vit
+    Pour un vu unique, le bot télécharge à la réception (avant que WhatsApp ne
+    le supprime) et enregistre ici, sans rien répondre à l'expéditeur. Pour
+    .extract, le bot archive le média qu'il vient de renvoyer. Le fichier vit
     dans backend/gallery/ (gitignoré), la table garde les métadonnées.
     """
 
@@ -221,7 +222,7 @@ class GalleryItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender = db.Column(db.String(100), default="", nullable=False)   # expéditeur (jid)
     chat = db.Column(db.String(100), default="", nullable=False)     # conversation (jid)
-    media_type = db.Column(db.String(10), default="image", nullable=False)  # "image" | "video"
+    media_type = db.Column(db.String(10), default="image", nullable=False)  # "image" | "video" | "audio" | "document"
     mime = db.Column(db.String(100), default="image/jpeg", nullable=False)
     filename = db.Column(db.String(200), default="", nullable=False)  # nom sécurisé sur disque
     caption = db.Column(db.String(500), default="", nullable=False)
