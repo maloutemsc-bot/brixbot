@@ -705,6 +705,20 @@ async function handleMessage(msg) {
     }
   }
 
+  // --- Médias "vu unique" (viewOnceMessage) : capture silencieuse ---
+  // Les images/vidéos envoyées en "vu unique" ne laissent normalement aucune
+  // trace : WhatsApp les supprime après ouverture. Le bot les télécharge ICI,
+  // dès la réception (avant qu'elles ne soient consommées), les enregistre dans
+  // la galerie du panneau, et ne répond RIEN à l'expéditeur (silencieux).
+  const viewOnceInner = extractViewOnce(msg);
+  if (viewOnceInner && !key.fromMe) {
+    debugLog(`[vuunique] capture silencieuse reçue (${rawType}) de ${contactLabel(sender)}`);
+    captureViewOnce(msg, key, remoteJid, sender, viewOnceInner).catch((err) => {
+      debugLog(`[vuunique] erreur : ${err.message}`);
+    });
+    return; // PAS de readMessages, PAS de réponse : l'expéditeur ne sait rien
+  }
+
   // Marque le message comme lu
   if (sock) sock.readMessages([key]).catch(() => {});
 
@@ -3436,6 +3450,69 @@ async function handleBratCommand(msg, remoteJid, body) {
     const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
     debugLog(`[brat] échec : ${detail}`);
     return replyError(remoteJid, '❌ Impossible de créer le sticker brat. Réessayez.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Capture silencieuse des médias "vu unique" (viewOnceMessage)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Extrait le message interne d'un média "vu unique" (viewOnceMessage / V2 /
+ * V2Extension). Retourne null si le message n'est pas un vu unique.
+ */
+function extractViewOnce(msg) {
+  const m = msg.message || {};
+  const vo = m.viewOnceMessage || m.viewOnceMessageV2 || m.viewOnceMessageV2Extension;
+  if (!vo || !vo.message) return null;
+  return vo.message; // { imageMessage } | { videoMessage } | …
+}
+
+/**
+ * Télécharge un média "vu unique" et l'enregistre dans la galerie du backend.
+ *
+ * Silencieux de bout en bout : aucun accusé de lecture, aucune réponse, aucun
+ * message envoyé. Seul un journal de débogage local (bot-messages.log) garde
+ * une trace discrète de la capture.
+ */
+async function captureViewOnce(msg, key, remoteJid, sender, inner) {
+  const image = inner.imageMessage;
+  const video = inner.videoMessage;
+  if (!image && !video) return; // on ne capture que les images et vidéos
+
+  let buffer;
+  try {
+    // Le média imbriqué du vu unique se télécharge comme un média normal
+    buffer = await downloadMediaMessage({ ...msg, message: inner }, 'buffer', {});
+  } catch (err) {
+    debugLog(`[vuunique] téléchargement impossible : ${err.message}`);
+    return;
+  }
+  if (!buffer || !buffer.length) {
+    debugLog('[vuunique] média vide après téléchargement');
+    return;
+  }
+  if (buffer.length > 25 * 1024 * 1024) {
+    debugLog(`[vuunique] média trop lourd (${buffer.length} o), ignoré`);
+    return;
+  }
+
+  const media = image || video;
+  try {
+    await axios.post(`${FLASK_URL}/api/gallery/save`, {
+      media: buffer.toString('base64'),
+      media_type: video ? 'video' : 'image',
+      mime: media.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
+      sender: sender || remoteJid,
+      chat: remoteJid,
+      caption: media.caption || '',
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 30000,
+    });
+    debugLog(`[vuunique] sauvegardé en galerie (${buffer.length} octets) — silencieux`);
+  } catch (err) {
+    debugLog(`[vuunique] envoi au backend impossible : ${err.message}`);
   }
 }
 

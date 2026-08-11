@@ -43,7 +43,7 @@ import imagine_service
 import pinterest_service
 import shazam_service
 import whatsapp_handler
-from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, db, init_db, utc_now_iso
+from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, GalleryItem, db, init_db, utc_now_iso
 
 # --------------------------------------------------------------------------- #
 #  Configuration de l'application
@@ -813,6 +813,150 @@ def make_brat():
     if not webp:
         return jsonify({"ok": False, "error": "Rendu brat impossible."}), 422
     return Response(webp, mimetype="image/webp")
+
+
+# --------------------------------------------------------------------------- #
+#  Galerie "vu unique" — médias capturés silencieusement
+# --------------------------------------------------------------------------- #
+# Les fichiers vivent dans backend/gallery/ (gitignoré). L'expéditeur d'une
+# image/vidéo "vu unique" n'est JAMAIS notifié : le bot télécharge à la
+# réception, enregistre, et ne répond rien.
+GALLERY_DIR = os.path.join(BASE_DIR, "gallery")
+os.makedirs(GALLERY_DIR, exist_ok=True)
+
+# Extension déduite du type MIME (jamais prise du client : sécurité)
+_GALLERY_EXT = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+    "image/gif": ".gif", "image/heic": ".heic",
+    "video/mp4": ".mp4", "video/quicktime": ".mov", "video/3gpp": ".3gp",
+}
+
+
+@app.route("/api/gallery/save", methods=["POST"])
+@require_bot_key
+@limiter.limit("120 per minute")
+def gallery_save():
+    """
+    Enregistre un média "vu unique" capturé par le bot (endpoint interne).
+
+    Corps JSON : {media: base64, media_type, mime, sender, chat, caption}.
+    Le fichier est écrit dans backend/gallery/ avec un nom sécurisé, la ligne
+    est ajoutée en base, et on ne répond RIEN à l'expéditeur WhatsApp.
+    """
+    data = request.get_json(silent=True) or {}
+    media_b64 = str(data.get("media", "") or "")
+    if not media_b64:
+        return jsonify({"ok": False, "error": "Média manquant."}), 400
+    # Garde-fou : base64 ≈ 4/3 du binaire → 34 Mo ≈ 25 Mo de média
+    if len(media_b64) > 34 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Média trop volumineux."}), 400
+
+    try:
+        media_bytes = base64.b64decode(media_b64)
+    except (binascii.Error, ValueError):
+        return jsonify({"ok": False, "error": "Média invalide."}), 400
+    if not media_bytes:
+        return jsonify({"ok": False, "error": "Média vide."}), 400
+
+    media_type = "video" if str(data.get("media_type", "image")) == "video" else "image"
+    mime = str(data.get("mime", "") or "").lower()
+    if mime not in _GALLERY_EXT:
+        mime = "video/mp4" if media_type == "video" else "image/jpeg"
+    ext = _GALLERY_EXT[mime]
+
+    # Nom de fichier sécurisé : jamais construit depuis une entrée client
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"{stamp}-{os.urandom(4).hex()}{ext}"
+    try:
+        with open(os.path.join(GALLERY_DIR, filename), "wb") as fh:
+            fh.write(media_bytes)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"Écriture impossible : {exc}"}), 500
+
+    item = GalleryItem(
+        sender=str(data.get("sender", "") or "")[:100],
+        chat=str(data.get("chat", "") or "")[:100],
+        media_type=media_type,
+        mime=mime,
+        filename=filename,
+        caption=str(data.get("caption", "") or "")[:500],
+        size=len(media_bytes),
+    )
+    db.session.add(item)
+    db.session.commit()
+
+    # Garde-fou : la galerie ne doit jamais remplir le disque du téléphone.
+    # Au-delà de GALLERY_MAX, les médias les plus anciens sont supprimés
+    # (fichier + ligne).
+    GALLERY_MAX = 500
+    overflow = GalleryItem.query.order_by(GalleryItem.id.desc()).offset(GALLERY_MAX).all()
+    for old in overflow:
+        try:
+            os.remove(os.path.join(GALLERY_DIR, old.filename))
+        except OSError:
+            pass
+        db.session.delete(old)
+    if overflow:
+        db.session.commit()
+        print(f"[galerie] nettoyage auto : {len(overflow)} média(s) ancien(s) supprimé(s)")
+
+    return jsonify({"ok": True, "id": item.id})
+
+
+@app.route("/api/gallery")
+@require_admin
+@limiter.limit("60 per minute")
+def gallery_list():
+    """Liste paginée des médias capturés (onglet Galerie du panneau)."""
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = min(max(int(request.args.get("per_page", 24)), 1), 100)
+    except ValueError:
+        page, per_page = 1, 24
+
+    query = GalleryItem.query
+    media_type = request.args.get("type")
+    if media_type in ("image", "video"):
+        query = query.filter_by(media_type=media_type)
+    total = query.count()
+    pages = max(1, (total + per_page - 1) // per_page)
+    items = query.order_by(GalleryItem.id.desc()) \
+        .offset((page - 1) * per_page).limit(per_page).all()
+    return jsonify({
+        "items": [item.to_dict() for item in items],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+    })
+
+
+@app.route("/api/gallery/<int:item_id>/file")
+@require_admin
+@limiter.limit("300 per minute")
+def gallery_file(item_id):
+    """Sert le fichier du média capturé (aperçu dans le panneau)."""
+    item = db.session.get(GalleryItem, item_id)
+    if item is None:
+        return jsonify({"error": "Média introuvable."}), 404
+    return send_from_directory(GALLERY_DIR, item.filename)
+
+
+@app.route("/api/gallery/<int:item_id>", methods=["DELETE"])
+@require_admin
+@limiter.limit("30 per minute")
+def gallery_delete(item_id):
+    """Supprime un média capturé (fichier + entrée en base)."""
+    item = db.session.get(GalleryItem, item_id)
+    if item is None:
+        return jsonify({"ok": False, "error": "Média introuvable."}), 404
+    try:
+        os.remove(os.path.join(GALLERY_DIR, item.filename))
+    except OSError:
+        pass  # fichier déjà absent : on supprime quand même la ligne
+    db.session.delete(item)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 # --------------------------------------------------------------------------- #

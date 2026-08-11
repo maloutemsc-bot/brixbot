@@ -11,6 +11,7 @@
   const state = {
     tab: 'dashboard',
     logsPage: 1,
+    galleryPage: 1,
     aiModels: [],
   };
 
@@ -85,6 +86,7 @@
     config: 'Configuration',
     whatsapp: 'WhatsApp',
     ia: 'Intelligence Artificielle',
+    gallery: 'Galerie vu unique',
     logs: 'Logs',
     test: 'Test API',
   };
@@ -100,6 +102,7 @@
     if (tab === 'config') loadConfig();
     if (tab === 'whatsapp') loadWhatsApp();
     if (tab === 'ia') loadAI();
+    if (tab === 'gallery') loadGallery();
     if (tab === 'logs') loadLogs();
   }
 
@@ -449,6 +452,90 @@
   }
 
   /* --------------------------------------------------------------------------
+     Galerie "vu unique"
+     -------------------------------------------------------------------------- */
+
+  async function loadGallery() {
+    try {
+      const params = new URLSearchParams({ page: state.galleryPage, per_page: 24 });
+      if ($('#gallery-type').value) params.set('type', $('#gallery-type').value);
+
+      const data = await api(`/api/gallery?${params.toString()}`);
+      const grid = $('#gallery-grid');
+
+      if (!data.items.length) {
+        grid.innerHTML = '<p class="gallery-empty">📭 Aucun média "vu unique" capturé pour le moment.</p>';
+      } else {
+        grid.innerHTML = data.items.map((item) => {
+          const badge = item.media_type === 'video' ? '🎬 Vidéo' : '🖼 Image';
+          const media = item.media_type === 'video'
+            ? `<video src="${esc(item.url)}" muted loop playsinline></video>`
+            : `<img src="${esc(item.url)}" alt="vu unique" loading="lazy">`;
+          const sender = String(item.sender || '').split('@')[0];
+          return `
+          <div class="gallery-item" data-id="${item.id}" data-url="${esc(item.url)}" data-type="${esc(item.media_type)}">
+            <span class="gallery-badge">${badge}</span>
+            <button class="gallery-del" title="Supprimer">✕</button>
+            ${media}
+            <div class="gallery-meta">${esc(sender)} · ${fmtDate(item.timestamp)}</div>
+          </div>`;
+        }).join('');
+      }
+
+      $('#gallery-info').textContent = `Page ${data.page} / ${data.pages} · ${data.total} média(s)`;
+      $('#gallery-prev').disabled = data.page <= 1;
+      $('#gallery-next').disabled = data.page >= data.pages;
+      $('#gallery-clear').style.display = data.total > 0 ? '' : 'none';
+
+      // Actions : suppression et agrandissement
+      $$('.gallery-item').forEach((card) => {
+        card.querySelector('.gallery-del').addEventListener('click', (event) => {
+          event.stopPropagation();
+          deleteGalleryItem(card.dataset.id);
+        });
+        card.addEventListener('click', () => openGalleryLightbox(card.dataset));
+      });
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function deleteGalleryItem(id) {
+    if (!confirm('Supprimer ce média capturé ? (fichier + entrée)')) return;
+    try {
+      await api(`/api/gallery/${id}`, { method: 'DELETE' });
+      toast('Média supprimé 🗑');
+      loadGallery();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  async function clearGallery() {
+    if (!confirm('Effacer TOUS les médias capturés ? Cette action est irréversible.')) return;
+    try {
+      // Parcourt TOUTES les pages (le backend limite à 100 par page)
+      let deleted = 0;
+      let page = 1;
+      for (;;) {
+        const data = await api(`/api/gallery?per_page=100&page=${page}`);
+        if (!data.items.length) break;
+        for (const item of data.items) {
+          await api(`/api/gallery/${item.id}`, { method: 'DELETE' });
+          deleted += 1;
+        }
+        if (page >= data.pages) break;
+        page += 1;
+      }
+      toast(`Galerie vidée (${deleted} média(s)) 🗑`);
+      state.galleryPage = 1;
+      loadGallery();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
+  // Agrandit le média dans une fenêtre native (nouvel onglet = plus simple
+  // que de réinventer une lightbox : l'image est servie par notre API).
+  function openGalleryLightbox(card) {
+    window.open(card.url, '_blank');
+  }
+
+  /* --------------------------------------------------------------------------
      Diagnostic
      -------------------------------------------------------------------------- */
 
@@ -578,6 +665,11 @@
   $('#ai-save').addEventListener('click', saveAI);
   $('#ai-test').addEventListener('click', testAI);
   $('#ai-logs-refresh').addEventListener('click', loadAILogs);
+
+  $('#gallery-type').addEventListener('change', () => { state.galleryPage = 1; loadGallery(); });
+  $('#gallery-prev').addEventListener('click', () => { state.galleryPage = Math.max(1, state.galleryPage - 1); loadGallery(); });
+  $('#gallery-next').addEventListener('click', () => { state.galleryPage += 1; loadGallery(); });
+  $('#gallery-clear').addEventListener('click', clearGallery);
 
   $('#log-status').addEventListener('change', () => { state.logsPage = 1; loadLogs(); });
   $('#log-type').addEventListener('change', () => { state.logsPage = 1; loadLogs(); });

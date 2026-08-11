@@ -205,6 +205,45 @@ class AILog(db.Model):
 
 
 # --------------------------------------------------------------------------- #
+#  GalleryItem — médias "vu unique" capturés silencieusement
+# --------------------------------------------------------------------------- #
+class GalleryItem(db.Model):
+    """
+    Média capturé : image ou vidéo reçue en "vu unique" sur WhatsApp.
+
+    Le bot la télécharge à la réception (avant que WhatsApp ne la supprime)
+    et l'enregistre ici, sans rien répondre à l'expéditeur. Le fichier vit
+    dans backend/gallery/ (gitignoré), la table garde les métadonnées.
+    """
+
+    __tablename__ = "gallery_items"
+
+    id = db.Column(db.Integer, primary_key=True)
+    sender = db.Column(db.String(100), default="", nullable=False)   # expéditeur (jid)
+    chat = db.Column(db.String(100), default="", nullable=False)     # conversation (jid)
+    media_type = db.Column(db.String(10), default="image", nullable=False)  # "image" | "video"
+    mime = db.Column(db.String(100), default="image/jpeg", nullable=False)
+    filename = db.Column(db.String(200), default="", nullable=False)  # nom sécurisé sur disque
+    caption = db.Column(db.String(500), default="", nullable=False)
+    size = db.Column(db.Integer, default=0, nullable=False)
+    timestamp = db.Column(db.String(40), default=utc_now_iso)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "sender": self.sender or "",
+            "chat": self.chat or "",
+            "media_type": self.media_type,
+            "mime": self.mime,
+            "filename": self.filename,
+            "caption": self.caption or "",
+            "size": self.size,
+            "timestamp": self.timestamp,
+            "url": f"/api/gallery/{self.id}/file",
+        }
+
+
+# --------------------------------------------------------------------------- #
 #  AIMemory — mémoire de conversation (contexte par utilisateur)
 # --------------------------------------------------------------------------- #
 class AIMemory(db.Model):

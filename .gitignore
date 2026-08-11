@@ -43,3 +43,6 @@ transcript.txt
 
 # Cache d'epoch de pinscrape (Pinterest, .pin) — créé dans le CWD
 /data/
+
+# Médias capturés en "vu unique" (sensibles — jamais commités)
+backend/gallery/
