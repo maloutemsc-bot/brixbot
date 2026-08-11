@@ -32,7 +32,9 @@ let sharp = null;
 try {
   sharp = require('sharp');
 } catch (_) {
-  console.warn('⚠️ sharp indisponible : la commande .sticker sera désactivée (environnement sans binaires natifs).');
+  // sharp indisponible (Termux/Android) : .sticker basculera automatiquement
+  // sur la conversion via le backend Flask (Pillow → WebP).
+  console.warn('⚠️ sharp indisponible : .sticker utilisera la conversion via le backend (Pillow).');
 }
 // Téléchargement YouTube via yt-dlp (binaire Python) : ytdl-core ne peut plus
 // décrypter les URLs de flux de YouTube actuel ("Could not parse decipher").
@@ -923,13 +925,6 @@ async function handleStickerCommand(msg, remoteJid) {
       '❌ Pour l\'instant, seules les photos deviennent des stickers. (vidéos non supportées)', msg);
   }
 
-  // sharp absent (ex: Termux/Android) : on refuse proprement au lieu de crasher.
-  if (!sharp) {
-    return replyError(remoteJid,
-      '❌ `.sticker` n\'est pas disponible sur cet appareil '
-      + '(bibliothèque d\'images native absente).', msg);
-  }
-
   // Photo du message courant (légende .sticker) ou photo citée
   const source = current.imageMessage
     ? msg
@@ -952,16 +947,36 @@ async function handleStickerCommand(msg, remoteJid) {
   }
 
   try {
-    const sticker = await sharp(buffer, { animated: false })
-      .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .webp({ quality: 90 })
-      .toBuffer();
+    let sticker;
+    if (sharp) {
+      // Conversion locale (sharp) — rapide, aucun réseau
+      sticker = await sharp(buffer, { animated: false })
+        .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .webp({ quality: 90 })
+        .toBuffer();
+    } else {
+      // sharp indisponible (Termux/Android) : conversion via le backend Flask
+      // (Pillow encode le WebP nativement, sans binaire natif).
+      debugLog('[sticker] sharp absent → conversion via le backend (Pillow)');
+      const { data } = await axios.post(`${FLASK_URL}/api/sticker`, buffer, {
+        headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/octet-stream' },
+        timeout: 30000,
+        responseType: 'arraybuffer',
+      });
+      if (!data || !data.length) {
+        throw new Error('réponse backend vide');
+      }
+      sticker = Buffer.from(data);
+    }
 
     await sock.sendMessage(remoteJid, { sticker }, { quoted: msg });
     debugLog(`[sticker] envoyé (${sticker.length} octets)`);
     transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🖼 [sticker créé]`);
   } catch (err) {
-    debugLog(`[sticker] conversion impossible : ${err.message}`);
+    // Avec responseType arraybuffer, l'erreur backend (400/422) arrive en Buffer
+    const buf = err.response?.data;
+    const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
+    debugLog(`[sticker] conversion impossible : ${detail}`);
     return replyError(remoteJid, '❌ Impossible de convertir cette image en sticker.', msg);
   }
 }

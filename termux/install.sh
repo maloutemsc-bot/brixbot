@@ -11,15 +11,21 @@ python -m pip install --upgrade pip >/dev/null 2>&1 || true
 # Pinterest (.pin) fonctionne via l'API directe dans pinterest_service.py :
 # requests seul suffit (déjà dans requirements.txt), AUCUNE dépendance lourde
 # (ni pinscrape, ni pydantic, ni opencv) — rien de plus à installer.
+# Pillow (.sticker via le backend) : le paquet Termux précompilé inclut
+# l'encodage WebP. Non-fatal : le bot retombe sur sharp s'il est disponible.
+if command -v pkg >/dev/null 2>&1; then
+  pkg install -y python-pillow >/dev/null 2>&1 || echo "  ⚠️ python-pillow (Termux) : échec — .sticker utilisera le fallback si dispo"
+fi
 python -m pip install -r backend/requirements.txt 2>/dev/null || echo "  ⚠️ Dépendances Python de base : échec (voir messages ci-dessus)"
 
 echo "  ✅ Pinterest (.pin) : API directe intégrée — aucune installation supplémentaire"
+echo "  ✅ Stickers (.sticker) : conversion via le backend (Pillow + WebP)"
 
 echo "[2/3] Dépendances Node (Baileys, Express, axios…)…"
 cd whatsapp-bot
 # --omit=optional : ignore sharp (binaires natifs indisponibles sur Android).
-# La commande .sticker est alors désactivée proprement (le bot le gère) :
-# tout le reste fonctionne (IA, .yt, .ocr, .tts, transcription vocale…).
+# .sticker fonctionne quand même via le backend (Pillow → WebP), tout le
+# reste fonctionne aussi (IA, .yt, .ocr, .tts, transcription vocale…).
 npm install --omit=optional
 cd ..
 

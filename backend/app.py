@@ -21,6 +21,7 @@ Démarrage :
 import base64
 import binascii
 import datetime
+import io
 import os
 import sys
 from functools import wraps
@@ -29,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, request, session
+from flask import Flask, Response, jsonify, redirect, render_template, request, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -639,6 +640,53 @@ def stats_chart():
             "ignored": CommandLog.query.filter_by(status="ignored").count(),
         },
     })
+
+
+# --------------------------------------------------------------------------- #
+#  Stickers — conversion d'image en WebP 512×512 (fallback du bot quand sharp
+#  est indisponible, ex: Termux/Android). Pillow encode le WebP nativement.
+# --------------------------------------------------------------------------- #
+@app.route("/api/sticker", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def make_sticker():
+    """
+    Convertit l'image reçue (body brut) en sticker WebP 512×512.
+
+    Utilisé par le bot Node.js quand la bibliothèque native sharp n'est pas
+    installable (Termux/Android) : le bot envoie les octets de la photo ici,
+    Pillow redimensionne (fit contain, fond transparent) et encode en WebP.
+    La réponse est l'image WebP brute (Content-Type: image/webp).
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        # install.sh installe Pillow de façon non-fatale : il peut manquer
+        return jsonify({"ok": False, "error": "Pillow non installé sur le backend (python-pillow requis pour .sticker)."}), 503
+
+    raw = request.get_data()
+    if not raw:
+        return jsonify({"ok": False, "error": "Image manquante."}), 400
+    if len(raw) > 15 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Image trop lourde (> 15 Mo)."}), 400
+
+    try:
+        # Ouverture + correction automatique de l'orientation EXIF (photos)
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        img = img.convert("RGBA")
+        # Fit contain 512×512 sur fond transparent (comme sharp)
+        img.thumbnail((512, 512), Image.LANCZOS)
+        canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+        canvas.paste(
+            img,
+            ((512 - img.width) // 2, (512 - img.height) // 2),
+            img,
+        )
+        out = io.BytesIO()
+        canvas.save(out, "WEBP", quality=90)
+        return Response(out.getvalue(), mimetype="image/webp")
+    except Exception as exc:  # image corrompue / format inconnu
+        return jsonify({"ok": False, "error": f"Conversion impossible : {exc}"}), 422
 
 
 # --------------------------------------------------------------------------- #
