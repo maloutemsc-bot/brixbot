@@ -34,6 +34,14 @@ echo [OK] Pinterest ACTIF ^(API directe, aucune installation requise^)
 
 :deps_ok
 
+rem Police brat authentique (.brat) : Arial Narrow telechargee et convertie
+rem depuis le site officiel. NON FATAL : si le site est indisponible, la
+rem police libre Roboto Condensed embarquee reste utilisee. Le script ne
+rem re-telecharge pas si la police est deja la bonne.
+if exist "backend\fetch_brat_font.py" (
+  .venv\Scripts\python.exe backend\fetch_brat_font.py >nul 2>&1 || echo [OK] .brat : police libre utilisee
+)
+
 rem ---------- 2. Fichiers .env ----------
 if not exist "backend\.env" copy /Y "backend\.env.example" "backend\.env" >nul
 if not exist "whatsapp-bot\.env" copy /Y "whatsapp-bot\.env.example" "whatsapp-bot\.env" >nul

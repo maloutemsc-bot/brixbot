@@ -17,6 +17,11 @@ if command -v pkg >/dev/null 2>&1; then
   pkg install -y python-pillow >/dev/null 2>&1 || echo "  ⚠️ python-pillow (Termux) : échec — .sticker utilisera le fallback si dispo"
 fi
 python -m pip install -r backend/requirements.txt 2>/dev/null || echo "  ⚠️ Dépendances Python de base : échec (voir messages ci-dessus)"
+# Police authentique du style brat (Arial Narrow) : téléchargée et convertie
+# à l'installation. NON FATAL : si le site officiel est indisponible, la police
+# libre embarquée (Roboto Condensed) reste utilisée et .brat fonctionne quand même.
+echo "[1b/3] Police brat authentique (Arial Narrow)…"
+python backend/fetch_brat_font.py || true
 
 echo "  ✅ Pinterest (.pin) : API directe intégrée — aucune installation supplémentaire"
 echo "  ✅ Stickers (.sticker) : conversion via le backend (Pillow + WebP)"

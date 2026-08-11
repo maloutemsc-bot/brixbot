@@ -8,3 +8,6 @@ gunicorn==22.0.0
 # Pillow : conversion image → sticker WebP (fallback .sticker quand sharp est
 # indisponible, ex: Termux/Android). Encodage WebP nativement supporté.
 Pillow==10.4.0
+# fontTools : conversion woff→ttf de la police Arial Narrow (.brat authentique,
+# téléchargée à l'installation via fetch_brat_font.py — jamais committée).
+fonttools==4.53.1

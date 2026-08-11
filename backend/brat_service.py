@@ -2,8 +2,9 @@
 brat_service.py — Génération de stickers "brat" (esthétique Charli XCX).
 
 Style : fond BLANC pur, texte noir tout en minuscules, police condensée
-(type Arial Narrow → Roboto Condensed, embarquée dans fonts/brat.ttf),
-léger flou + grain "sale" pour le rendu authentique basse résolution.
+(Arial Narrow — la VRAIE police du générateur officiel, embarquée en TTF
+via fonts/brat.ttf), flou + grain "sale" pour le rendu authentique basse
+résolution (mêmes réglages que le projet open source du générateur).
 
 Entrée : texte libre. Sortie : image WebP 512×512 (sticker WhatsApp).
 Aucune dépendance autre que Pillow (déjà utilisée pour .sticker).
@@ -15,7 +16,9 @@ import random
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# Police condensée embarquée (Roboto Condensed, licence libre Apache 2.0).
+# Police condensée du style brat : Arial Narrow officielle si fetch_brat_font.py
+# a pu la télécharger à l'installation, sinon la police libre Roboto Condensed
+# embarquée par défaut. .brat fonctionne dans tous les cas.
 FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "brat.ttf")
 
 CANVAS = 512          # taille du sticker (WhatsApp)
@@ -83,8 +86,9 @@ def render(text):
             draw.text((MARGIN, y), line, font=font, fill="black")
             y += line_h
 
-        # Effet brat : très léger flou + grain "sale" (rendu basse résolution)
-        img = img.filter(ImageFilter.GaussianBlur(0.7))
+        # Effet brat : flou + grain "sale" (rendu authentique basse résolution,
+        # mêmes réglages que le générateur open source : blur ~4px sur grand format)
+        img = img.filter(ImageFilter.GaussianBlur(1.2))
         pixels = img.load()
         for _ in range(2800):
             x = random.randrange(CANVAS)
