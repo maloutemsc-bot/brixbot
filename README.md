@@ -388,6 +388,12 @@ réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à
 le monde ; sinon, elle ne répond que dans les conversations listées (numéros ou
 identifiants de groupe, réglables dans le panneau ou via `.ia oui`).
 
+**Commandes cachées** (présentes mais absentes du `.help`) :
+
+| Commande | Description |
+|---|---|
+| `.nsfw [nombre] tags` | Envoie des images rule34.xxx (contenu adulte). Ex : `.nsfw 3 neko`, `.nsfw cat_girl blue_eyes` (espaces = +, `_` dans un tag) — scraper TUVIMEN/rule34-scraper (backend/vendor/) |
+
 **Formatage des réponses `.search` :**
 
 ```

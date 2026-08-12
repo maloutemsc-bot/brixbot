@@ -43,6 +43,7 @@ import brat_service
 import brixhub_service
 import imagine_service
 import pinterest_service
+import rule34_service
 import shazam_service
 import whatsapp_handler
 from database import AIConfig, AILog, AIMemory, BotConfig, CommandLog, GalleryItem, db, init_db, utc_now_iso
@@ -1256,6 +1257,44 @@ def pin_search():
         "source": "pinterest" if urls else "unavailable",
         "urls": urls,
         "pinterest_available": pinterest_service.available(),
+    })
+
+
+# --------------------------------------------------------------------------- #
+#  Rule34 — commande CACHÉE .nsfw (scraper TUVIMEN/rule34-scraper, GPLv3)
+# --------------------------------------------------------------------------- #
+@app.route("/api/nsfw/search", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def nsfw_search():
+    """
+    Recherche d'images rule34.xxx (commande cachée .nsfw).
+
+    Appelé par le bot Node.js pour la commande .nsfw. Le scraper
+    (TUVIMEN/rule34-scraper, vendored dans backend/vendor/) est utilisé via
+    rule34_service : la recherche est en thread avec un timeout global, et le
+    service ne lève jamais d'exception. Si rien n'est trouvé, le bot affiche
+    une erreur propre — jamais d'échec bloquant.
+    """
+    data = request.get_json(silent=True) or {}
+    query = str(data.get("query", "") or "").strip()
+    # Le bot demande PLUS d'URLs que le nombre d'images voulu (liens morts
+    # ignorés) : on accepte jusqu'à 30 comme la route Pinterest.
+    try:
+        count = max(1, min(int(data.get("count", 5)), 30))
+    except (TypeError, ValueError):
+        count = 5
+    if not query:
+        return jsonify({"ok": False, "error": "Requête vide."}), 400
+    if len(query) > 200:
+        return jsonify({"ok": False, "error": "Requête trop longue."}), 400
+
+    urls = rule34_service.search(query, count)
+    return jsonify({
+        "ok": True,
+        "source": "rule34" if urls else "unavailable",
+        "urls": urls,
+        "rule34_available": rule34_service.available(),
     })
 
 

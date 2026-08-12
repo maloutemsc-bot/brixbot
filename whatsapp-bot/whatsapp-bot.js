@@ -908,6 +908,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande CACHÉE .nsfw : recherche d'images rule34.xxx (hors .help) ---
+  if (/^\.nsfw\b/i.test(trimmed)) {
+    debugLog(`[nsfw] commande : ${trimmed}`);
+    handleNsfwCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[nsfw] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande secrète : simulation (à découvrir !) ---
   if (/^\.hack\b/i.test(trimmed)) {
     debugLog(`[secrete] commande : ${trimmed}`);
@@ -2172,6 +2181,125 @@ async function handlePinCommand(msg, remoteJid, body) {
   }
   debugLog(`[pin] ${sent} image(s) envoyée(s) pour « ${query} » (source : ${items[0]?.source})`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📌 ${sent} image(s) pour « ${query} » (${items[0]?.source})`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .nsfw (CACHÉE, hors .help) — images rule34.xxx via le scraper     */
+/*  TUVIMEN/rule34-scraper (backend/vendor/rule34xxx.py, endpoint backend     */
+/*  /api/nsfw/search). Aucun filtre : la recherche renvoie du contenu adulte. */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Commande .nsfw — recherche d'images sur rule34.xxx (contenu adulte).
+ *
+ * Usage :
+ *   • .nsfw tag              → 5 images
+ *   • .nsfw 3 tag            → 3 images (nombre optionnel, 1 à 10)
+ *   • .nsfw tag1 tag2        → plusieurs tags combinés (espaces → +, _ pour un tag)
+ *
+ * La recherche se fait ENTIÈREMENT côté backend (rule34_service, thread +
+ * timeout) : le bot ne fait que télécharger et envoyer les images reçues.
+ */
+async function handleNsfwCommand(msg, remoteJid, body) {
+  let rest = body.replace(/^\.nsfw\s*/i, '').trim();
+  let count = PIN_DEFAULT_COUNT;
+  let query = rest;
+
+  // Nombre optionnel au début : ".nsfw 3 neko" → 3 images de "neko"
+  const firstWord = rest.split(' ')[0] || '';
+  const parsedCount = parseInt(firstWord, 10);
+  if (String(parsedCount) === firstWord && parsedCount > 0) {
+    count = Math.min(parsedCount, PIN_MAX_COUNT);
+    query = rest.slice(firstWord.length).trim();
+  }
+
+  if (!query) {
+    return replyError(remoteJid,
+      '🔞 *Commande .nsfw* (cachée)\n'
+      + 'Envoie des images rule34.xxx correspondant à une recherche.\n\n'
+      + 'Utilisation :\n'
+      + '• `.nsfw neko` — 5 images\n'
+      + '• `.nsfw 3 neko` — 3 images (nombre optionnel, 1 à 10)\n'
+      + '• `.nsfw cat_girl blue_eyes` — combiner des tags (espaces = +)\n\n'
+      + '⚠️ Contenu adulte uniquement. Cette commande n\'apparaît pas dans .help.', msg);
+  }
+
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: `🔞 Recherche sur rule34.xxx pour « ${query} »… (contenu adulte)`,
+    }).catch(() => {});
+  }
+
+  // La recherche est déléguée au backend (scraper TUVIMEN vendored). On
+  // demande un peu plus d'URLs que nécessaire : certains liens peuvent être
+  // morts, la boucle d'envoi les ignorera.
+  const fetchCount = Math.min(count * 3, 30);
+  let items = []; // [{url, source}]
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/nsfw/search`, {
+      query,
+      count: fetchCount,
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 40000,
+    });
+    if (res.data?.ok && Array.isArray(res.data.urls) && res.data.urls.length) {
+      items = res.data.urls.map((u) => ({ url: u, source: 'Rule34' }));
+      debugLog(`[nsfw] rule34.xxx : ${items.length} URL(s)`);
+    } else {
+      debugLog(`[nsfw] rule34 indisponible (source=${res.data?.source || '?'}, avail=${res.data?.rule34_available})`);
+    }
+  } catch (err) {
+    debugLog(`[nsfw] backend injoignable : ${err.message}`);
+  }
+
+  if (!items.length) {
+    return replyError(remoteJid, `❌ Aucune image trouvée pour « ${query} ». Réessayez.`, msg);
+  }
+
+  // Téléchargement puis envoi, image par image (les liens morts sont ignorés).
+  let sent = 0;
+  const sendOne = async (item) => {
+    const url = item.url;
+    let buffer;
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        maxContentLength: PIN_MAX_BYTES,
+        headers: { 'User-Agent': PIN_UA },
+      });
+      // Garde-fou : certains liens renvoient une page HTML au lieu d'une image
+      const ctype = String(res.headers['content-type'] || '');
+      if (!res.data || !res.data.length || ctype.indexOf('image/') !== 0) {
+        debugLog(`[nsfw] lien non-image ignoré : ${url}`);
+        return;
+      }
+      buffer = res.data;
+    } catch (err) {
+      debugLog(`[nsfw] téléchargement impossible (${url}) : ${err.message}`);
+      return;
+    }
+    try {
+      await sock.sendMessage(remoteJid, {
+        image: buffer,
+        caption: `🔞 *${query}* (${sent + 1}/${count}) · ${item.source}`,
+      }, { quoted: msg });
+      sent++;
+    } catch (err) {
+      debugLog(`[nsfw] envoi impossible (${url}) : ${err.message}`);
+    }
+  };
+
+  for (let i = 0; i < items.length && sent < count; i++) {
+    await sendOne(items[i]);
+  }
+
+  if (!sent) {
+    return replyError(remoteJid, "❌ Aucune image n'a pu être envoyée. Réessayez.", msg);
+  }
+  debugLog(`[nsfw] ${sent} image(s) envoyée(s) pour « ${query} » (source : ${items[0]?.source})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔞 ${sent} image(s) pour « ${query} » (rule34.xxx)`);
 }
 
 /* -------------------------------------------------------------------------- */
