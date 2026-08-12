@@ -2230,31 +2230,50 @@ async function handleNsfwCommand(msg, remoteJid, body) {
     }).catch(() => {});
   }
 
-  // La recherche est déléguée au backend (scraper TUVIMEN vendored). On
-  // demande un peu plus d'URLs que nécessaire : certains liens peuvent être
-  // morts, la boucle d'envoi les ignorera.
-  const fetchCount = Math.min(count * 3, 30);
+  // La recherche est déléguée au backend (scraper TUVIMEN vendored). Le
+  // service renvoie uniquement des liens du CDN wimg (fiables) avec une marge
+  // interne : inutile d'en demander plus que le nombre voulu, ça ferait
+  // traîner la commande sur un réseau mobile lent.
+  const fetchCount = Math.min(count, 30);
   let items = []; // [{url, source}]
+  let nsfwDiag = { network: false, http: null, avail: null };
   try {
     const res = await axios.post(`${FLASK_URL}/api/nsfw/search`, {
       query,
       count: fetchCount,
     }, {
       headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
-      timeout: 40000,
+      timeout: 50000,
     });
     if (res.data?.ok && Array.isArray(res.data.urls) && res.data.urls.length) {
       items = res.data.urls.map((u) => ({ url: u, source: 'Rule34' }));
       debugLog(`[nsfw] rule34.xxx : ${items.length} URL(s)`);
     } else {
-      debugLog(`[nsfw] rule34 indisponible (source=${res.data?.source || '?'}, avail=${res.data?.rule34_available})`);
+      // Diagnostic précis : aide à comprendre pourquoi la recherche a échoué
+      // (route inconnue = backend pas redémarré après update, avail=false =
+      // deps reliq/treerequests absentes, source=unavailable = aucun résultat).
+      const body = res.data || {};
+      nsfwDiag.http = res.status || null;
+      nsfwDiag.avail = body.rule34_available;
+      debugLog(`[nsfw] aucune URL (http=${res.status || '?'}, source=${body.source || '?'}, avail=${body.rule34_available}, error=${body.error || '-'})`);
     }
   } catch (err) {
+    // Backend injoignable (down, timeout…) : message d'erreur distinct plus bas.
+    nsfwDiag.network = true;
     debugLog(`[nsfw] backend injoignable : ${err.message}`);
   }
 
   if (!items.length) {
-    return replyError(remoteJid, `❌ Aucune image trouvée pour « ${query} ». Réessayez.`, msg);
+    // Message d'erreur adapté à la cause (le détail complet est dans le log).
+    let reason = `❌ Aucune image trouvée pour « ${query} ». Réessayez.`;
+    if (nsfwDiag.network) {
+      reason = '❌ Backend injoignable : vérifiez qu\'il est bien démarré.';
+    } else if (nsfwDiag.http === 404) {
+      reason = '❌ Backend pas à jour : relancez `bash termux/update.sh` puis redémarrez le bot.';
+    } else if (nsfwDiag.avail === false) {
+      reason = '❌ Scraper rule34 non installé : relancez `bash termux/update.sh` (deps manquantes).';
+    }
+    return replyError(remoteJid, reason, msg);
   }
 
   // Téléchargement puis envoi, image par image (les liens morts sont ignorés).

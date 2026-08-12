@@ -52,9 +52,9 @@ def _build_list_url(query):
     """
     Transforme la requête libre en URL de liste rule34.xxx.
 
-    « cat girl mignon » → tags=cat_girl+mignon (les espaces d'un tag deviennent
-    des _, les tags sont séparés par des +). On nettoite aussi les caractères
-    qui casseraient l'URL.
+    Chaque mot devient un tag, les tags sont séparés par des + :
+    « cat_girl blue_eyes » → tags=cat_girl+blue_eyes (l'utilisateur met déjà
+    des _ dans un tag multi-mots, les espaces séparent les tags).
     """
     # Les mots de la requête deviennent des tags rule34 (séparés par des +).
     # L'utilisateur met déjà des _ dans un tag multi-mots (ex: cat_girl) :
@@ -104,12 +104,13 @@ def _do_search(query, count):
         return []
 
     # On récupère les détails des posts (un peu plus que demandé : certains
-    # échantillons peuvent être morts). 1 requête par post, sans commentaires,
-    # avec une petite pause pour respecter le site. On s'arrête dès qu'on a
-    # assez d'URLs pour ne pas faire trainer la commande.
+    # posts n'ont pas d'image sur le CDN wimg). 1 requête par post, sans
+    # commentaires, avec une petite pause pour respecter le site. On s'arrête
+    # dès qu'on a assez d'URLs pour ne pas faire trainer la commande (sur un
+    # réseau mobile lent, chaque requête compte : le timeout global est 30 s).
     out = []
-    target = count + 3  # marge pour les échantillons morts
-    needed = min(count * 3, 30)
+    target = count + 2  # marge pour les posts sans CDN wimg
+    needed = min(count + 5, 30)
     for post_url in posts[:needed]:
         if len(out) >= target:
             break
@@ -122,13 +123,12 @@ def _do_search(query, count):
         # un dict partiel potentiellement vide.
         if not isinstance(data, dict) or code >= 300:
             continue
-        # Préférence à l'ORIGINAL (CDN wimg.rule34.xxx) : les échantillons
-        # (rule34.xxx/samples/) sont protégés contre le hotlink (403 hors
-        # navigateur avec session), alors que le CDN se laisse télécharger
-        # directement par le bot. L'original est plus lourd mais passe sous
-        # le garde-fou de 15 Mo du bot.
+        # NE GARDER QUE le CDN wimg.rule34.xxx : c'est le seul hôte qui se
+        # laisse télécharger directement par le bot. Les autres
+        # (rule34.xxx/samples/, rule34.xxx/images/) renvoient 403 hors
+        # navigateur (hotlink protection).
         url = _clean_image_url(data.get("original") or data.get("image") or "")
-        if url and url not in out:
+        if url.startswith("https://wimg.rule34.xxx/") and url not in out:
             out.append(url)
         time.sleep(0.1)  # politesse : évite un blocage par rate-limit
 
