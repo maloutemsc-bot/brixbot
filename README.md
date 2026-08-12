@@ -392,7 +392,7 @@ identifiants de groupe, réglables dans le panneau ou via `.ia oui`).
 
 | Commande | Description |
 |---|---|
-| `.nsfw [nombre] tags` | Envoie des images rule34.xxx (contenu adulte). Ex : `.nsfw 3 neko`, `.nsfw cat_girl blue_eyes` (espaces = +, `_` dans un tag) — scraper TUVIMEN/rule34-scraper (backend/vendor/) |
+| `.nsfw [nombre] tags` | Envoie des images rule34.xxx (contenu adulte). Ex : `.nsfw 3 neko`, `.nsfw cat_girl blue_eyes` (espaces = +, `_` dans un tag) — parsing HTML direct (`requests` seul, aucune dépendance lourde) |
 
 **Formatage des réponses `.search` :**
 

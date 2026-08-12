@@ -1261,7 +1261,7 @@ def pin_search():
 
 
 # --------------------------------------------------------------------------- #
-#  Rule34 — commande CACHÉE .nsfw (scraper TUVIMEN/rule34-scraper, GPLv3)
+#  Rule34 — commande CACHÉE .nsfw (parsing HTML requests seul)
 # --------------------------------------------------------------------------- #
 @app.route("/api/nsfw/search", methods=["POST"])
 @require_bot_key
@@ -1270,11 +1270,12 @@ def nsfw_search():
     """
     Recherche d'images rule34.xxx (commande cachée .nsfw).
 
-    Appelé par le bot Node.js pour la commande .nsfw. Le scraper
-    (TUVIMEN/rule34-scraper, vendored dans backend/vendor/) est utilisé via
-    rule34_service : la recherche est en thread avec un timeout global, et le
-    service ne lève jamais d'exception. Si rien n'est trouvé, le bot affiche
-    une erreur propre — jamais d'échec bloquant.
+    Appelé par le bot Node.js pour la commande .nsfw. La recherche est faite
+    par rule34_service (parsing HTML direct avec requests SEUL — aucune
+    dépendance lourde, fonctionne aussi sur Termux/Android) : la recherche est
+    en thread avec un timeout global, et le service ne lève jamais
+    d'exception. Si rien n'est trouvé, le bot affiche une erreur propre —
+    jamais d'échec bloquant.
     """
     data = request.get_json(silent=True) or {}
     query = str(data.get("query", "") or "").strip()
@@ -1289,11 +1290,13 @@ def nsfw_search():
     if len(query) > 200:
         return jsonify({"ok": False, "error": "Requête trop longue."}), 400
 
-    urls = rule34_service.search(query, count)
+    result = rule34_service.search(query, count)
+    urls = result.get("urls") or []
     return jsonify({
         "ok": True,
         "source": "rule34" if urls else "unavailable",
         "urls": urls,
+        "reachable": bool(result.get("reachable")),
         "rule34_available": rule34_service.available(),
     })
 

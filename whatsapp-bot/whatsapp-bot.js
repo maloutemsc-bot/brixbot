@@ -2185,7 +2185,7 @@ async function handlePinCommand(msg, remoteJid, body) {
 
 /* -------------------------------------------------------------------------- */
 /*  Commande .nsfw (CACHÉE, hors .help) — images rule34.xxx via le scraper     */
-/*  TUVIMEN/rule34-scraper (backend/vendor/rule34xxx.py, endpoint backend     */
+/*  parsing HTML requests seul (endpoint backend /api/nsfw/search)            */
 /*  /api/nsfw/search). Aucun filtre : la recherche renvoie du contenu adulte. */
 /* -------------------------------------------------------------------------- */
 
@@ -2230,8 +2230,9 @@ async function handleNsfwCommand(msg, remoteJid, body) {
     }).catch(() => {});
   }
 
-  // La recherche est déléguée au backend (scraper TUVIMEN vendored). Le
-  // service renvoie uniquement des liens du CDN wimg (fiables) avec une marge
+  // La recherche est déléguée au backend (rule34_service, requests seul :
+  // aucune dépendance lourde, fonctionne aussi sur Termux). Le service
+  // renvoie uniquement des liens du CDN wimg (fiables) avec une marge
   // interne : inutile d'en demander plus que le nombre voulu, ça ferait
   // traîner la commande sur un réseau mobile lent.
   const fetchCount = Math.min(count, 30);
@@ -2251,11 +2252,12 @@ async function handleNsfwCommand(msg, remoteJid, body) {
     } else {
       // Diagnostic précis : aide à comprendre pourquoi la recherche a échoué
       // (route inconnue = backend pas redémarré après update, avail=false =
-      // deps reliq/treerequests absentes, source=unavailable = aucun résultat).
+      // source=unavailable = aucun résultat trouvé par rule34.xxx).
       const body = res.data || {};
       nsfwDiag.http = res.status || null;
       nsfwDiag.avail = body.rule34_available;
-      debugLog(`[nsfw] aucune URL (http=${res.status || '?'}, source=${body.source || '?'}, avail=${body.rule34_available}, error=${body.error || '-'})`);
+      nsfwDiag.reachable = body.reachable;
+      debugLog(`[nsfw] aucune URL (http=${res.status || '?'}, source=${body.source || '?'}, avail=${body.rule34_available}, reachable=${body.reachable}, error=${body.error || '-'})`);
     }
   } catch (err) {
     // Backend injoignable (down, timeout…) : message d'erreur distinct plus bas.
@@ -2270,8 +2272,8 @@ async function handleNsfwCommand(msg, remoteJid, body) {
       reason = '❌ Backend injoignable : vérifiez qu\'il est bien démarré.';
     } else if (nsfwDiag.http === 404) {
       reason = '❌ Backend pas à jour : relancez `bash termux/update.sh` puis redémarrez le bot.';
-    } else if (nsfwDiag.avail === false) {
-      reason = '❌ Scraper rule34 non installé : relancez `bash termux/update.sh` (deps manquantes).';
+    } else if (nsfwDiag.reachable === false) {
+      reason = '❌ rule34.xxx est injoignable depuis ce réseau (le site adulte peut être bloqué par ton opérateur/Wi-Fi). Essaie avec un VPN.';
     }
     return replyError(remoteJid, reason, msg);
   }

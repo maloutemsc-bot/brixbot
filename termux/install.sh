@@ -16,7 +16,13 @@ python -m pip install --upgrade pip >/dev/null 2>&1 || true
 if command -v pkg >/dev/null 2>&1; then
   pkg install -y python-pillow >/dev/null 2>&1 || echo "  ⚠️ python-pillow (Termux) : échec — .sticker utilisera le fallback si dispo"
 fi
-python -m pip install -r backend/requirements.txt 2>/dev/null || echo "  ⚠️ Dépendances Python de base : échec (voir messages ci-dessus)"
+# La sortie pip est TOUJOURS affichée : un échec doit être visible (le
+# 2>/dev/null d'avant masquait les vraies erreurs, ex: reliq sur Termux).
+if python -m pip install -r backend/requirements.txt; then
+  echo "  ✅ Dépendances Python de base installées"
+else
+  echo "  ⚠️ Dépendances Python de base : échec — voir l'erreur ci-dessus ⬆️"
+fi
 # Police authentique du style brat (Arial Narrow) : téléchargée et convertie
 # à l'installation. NON FATAL : si le site officiel est indisponible, la police
 # libre embarquée (Roboto Condensed) reste utilisée et .brat fonctionne quand même.
