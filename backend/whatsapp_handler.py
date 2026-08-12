@@ -917,11 +917,122 @@ def _handle_ia(body, sender, remote_jid):
 # --------------------------------------------------------------------------- #
 #  Formatage des résultats BrixHub
 # --------------------------------------------------------------------------- #
+# Champs connus d'une fiche BrixHub, affichés dans cet ordre (icône + valeurs).
+_PERSON_FIELDS = (
+    ("ville", "📍"),
+    ("email", "📧"),
+    ("telephone", "📱"),
+    ("adresse", "🏠"),
+)
+
+# Valeurs affichées par ligne pour une personne (limite le risque d'un message
+# unique trop long : sendChunks découpe par LIGNES à 3900 caractères).
+_VALUES_PER_LINE = 4
+
+# Clés techniques que l'on n'affiche jamais (bruit sans intérêt pour l'utilisateur).
+_SKIP_EXTRA_FIELDS = {
+    "id", "uid", "uuid", "created_at", "updated_at", "timestamp",
+    "score", "status", "type", "source", "priority", "verified",
+    "valid", "count", "total", "page", "per_page", "key",
+}
+
+
+def _fmt_values(values):
+    """Formate une liste de valeurs en lignes de _VALUES_PER_LINE maximum."""
+    return [" · ".join(values[i:i + _VALUES_PER_LINE])
+            for i in range(0, len(values), _VALUES_PER_LINE)]
+
+
+# Noms des champs connus (utilisé pour exclure ces clés du catch-all "autres")
+_KNOWN_FIELD_NAMES = {name for name, _ in _PERSON_FIELDS} | {"nom_famille", "prenom"}
+
+
+def _normalize_name_key(item):
+    """Clé de regroupement d'une personne : nom + prénom (insensible à la casse)."""
+    prenom = str(item.get("prenom") or "").strip().lower()
+    nom = str(item.get("nom_famille") or "").strip().lower()
+    if prenom or nom:
+        return f"{nom}|{prenom}"
+    # Sans nom (recherche .tel sans fiche nommée), on regroupe par numéro
+    digits = _digits(item.get("telephone"))
+    return f"tel:{digits}" if digits else None
+
+
+def _person_label(item):
+    """Nom complet d'une personne, avec le numéro si le nom est inconnu."""
+    name = _person_name(item)
+    if name == "Inconnu" and item.get("telephone"):
+        return f"Inconnu ({item['telephone']})"
+    return name
+
+
+def _group_results(results):
+    """
+    Regroupe les résultats bruts BrixHub PAR PERSONNE.
+
+    L'API renvoie souvent plusieurs lignes pour la même personne (une par
+    source de données). On les fusionne pour montrer TOUT ce qu'on a trouvé :
+    tous les emails, tous les téléphones, toutes les adresses — au lieu
+    d'une seule ligne qui ne montre qu'un champ.
+    """
+    groups = {}
+    order = []
+    for item in results:
+        key = _normalize_name_key(item) or f"#item{len(order)}"
+        if key not in groups:
+            groups[key] = {
+                "name": _person_label(item),
+                "confidence": 0,
+                "fields": {name: [] for name, _ in _PERSON_FIELDS},
+                "autres": {},
+                "sources": [],
+            }
+            order.append(key)
+        group = groups[key]
+
+        # Confiance : on garde la meilleure valeur trouvée pour la personne
+        try:
+            group["confidence"] = max(group["confidence"], float(item.get("_confidence") or 0))
+        except (TypeError, ValueError):
+            pass
+
+        # Champs connus (ville, email, téléphone, adresse…) — valeurs dédupliquées
+        for name, _icon in _PERSON_FIELDS:
+            value = item.get(name)
+            if value is None:
+                continue
+            value = str(value).strip()
+            if value and value not in group["fields"][name]:
+                group["fields"][name].append(value)
+
+        # Champs supplémentaires éventuels (entreprise, réseaux sociaux…)
+        for name, value in item.items():
+            if (name in _KNOWN_FIELD_NAMES or name.startswith("_") or
+                    name in _SKIP_EXTRA_FIELDS or value is None):
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            bucket = group["autres"].setdefault(name, [])
+            if text not in bucket:
+                bucket.append(text)
+
+        # Sources de données (ex : "Free (2024)")
+        for source in (item.get("_sources") or []):
+            if source and source not in group["sources"]:
+                group["sources"].append(str(source))
+
+    return [groups[key] for key in order]
+
+
 def format_results(result, label, elapsed=0.0, hint=None):
     """
     Formate les résultats BrixHub en message WhatsApp lisible.
 
-    Utilisé par le flux WhatsApp (.search / .tel) et par l'onglet "Test API".
+    Les résultats sont regroupés PAR PERSONNE et affichent TOUTES les
+    données trouvées (tous les emails, téléphones, adresses…), pas seulement
+    le premier champ. Utilisé par le flux WhatsApp (.search / .tel) et par
+    l'onglet "Test API".
     """
     results = result["results"]
     meta = result.get("meta") or {}
@@ -938,20 +1049,35 @@ def format_results(result, label, elapsed=0.0, hint=None):
         return "\n".join(lines)
 
     lines.append("")
-    for index, item in enumerate(results, start=1):
-        lines.append(f"*{index}. {_person_name(item)}* {_stars(item.get('_confidence'))}")
-        if item.get("ville"):
-            lines.append(f"📍 {item['ville']}")
-        if item.get("email"):
-            lines.append(f"📧 {item['email']}")
-        if item.get("telephone"):
-            lines.append(f"📱 {item['telephone']}")
-        if index < len(results):
+    persons = _group_results(results)
+    for index, person in enumerate(persons, start=1):
+        lines.append(f"*{index}. {person['name']}* {_stars(person['confidence'])}")
+
+        # Champs connus — TOUTES les valeurs (emails, téléphones, villes…),
+        # enveloppées par paquets pour rester lisibles même avec beaucoup de
+        # données pour la même personne.
+        for name, icon in _PERSON_FIELDS:
+            for line in _fmt_values(person["fields"][name]):
+                lines.append(f"{icon} {line}")
+
+        # Champs supplémentaires (entreprise, réseaux sociaux…)
+        for field_name, values in person["autres"].items():
+            pretty = field_name.replace("_", " ").capitalize()
+            for line in _fmt_values(values):
+                lines.append(f"ℹ️ {pretty} : {line}")
+
+        if person["sources"]:
+            for line in _fmt_values(person["sources"]):
+                lines.append(f"📚 {line}")
+
+        if index < len(persons):
             lines.append("────────────────────")
 
-    total = meta.get("total", len(results))
+    footer = f"📊 {len(persons)} fiche(s) · ⚡ {took_ms} ms"
+    if meta.get("total", len(results)) > len(persons):
+        footer += f" · {meta['total']} résultats au total"
     lines.append("")
-    lines.append(f"📊 {total} résultat(s) · ⚡ {took_ms} ms")
+    lines.append(footer)
     return "\n".join(lines)
 
 
