@@ -438,7 +438,7 @@ async function startBot() {
   if (sock) return;          // un socket est déjà actif — JAMAIS deux
   startPending = true;
   console.log('🤖 Démarrage du bot WhatsApp…');
-  debugLog('[version] v2.4.1 — capture vu unique renforcée (wrappers + flag viewOnce)');
+  debugLog('[version] v2.5.0 — capture vu unique par réponse silencieuse + audio + dédoublonnage galerie');
   try {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
@@ -716,7 +716,16 @@ async function handleMessage(msg) {
   // commandes (qui commencent par ".") afin que l'utilisateur puisse utiliser
   // le bot depuis son propre WhatsApp. Les réponses du bot (texte normal)
   // restent ignorées → aucune boucle possible.
-  if (key.fromMe && !trimmed.startsWith('.')) return;
+  if (key.fromMe && !trimmed.startsWith('.')) {
+    // Exception silencieuse : quand le propriétaire RÉPOND à un média "vu
+    // unique", le média est archivé dans la galerie SANS être renvoyé (on ne
+    // prévient pas l'expéditeur). Le renvoi (qui, lui, prévient) reste
+    // réservé à la commande .extract.
+    captureQuotedViewOnce(msg, key, remoteJid).catch((err) => {
+      debugLog(`[vuunique] capture par réponse impossible : ${err.message}`);
+    });
+    return;
+  }
 
   const isGroup = remoteJid.endsWith('@g.us');
 
@@ -753,6 +762,17 @@ async function handleMessage(msg) {
   // dès la réception (avant qu'elles ne soient consommées), les enregistre dans
   // la galerie du panneau, et ne répond RIEN à l'expéditeur (silencieux).
   const viewOnceInner = extractViewOnce(msg);
+  // Mémorise l'id de tout vu unique vu à la réception (même si la capture
+  // échoue — contenu non décrypté, format inattendu…) : il servira à
+  // reconnaître ce vu unique si le propriétaire y RÉPOND ensuite, au cas où
+  // WhatsApp n'aurait pas préservé le flag viewOnce dans le message cité.
+  if (hasViewOnceIndicator(msg) && !key.fromMe && key.id) {
+    viewOnceSeen.add(key.id);
+    if (viewOnceSeen.size > VIEW_ONCE_SEEN_MAX) {
+      const oldest = viewOnceSeen.values().next().value;
+      viewOnceSeen.delete(oldest);
+    }
+  }
   if (hasViewOnceIndicator(msg) && !viewOnceInner) {
     // Diagnostic : un indicateur "vu unique" est présent mais le contenu n'est
     // pas exploitable (format inattendu, wrapper vide, média non image/vidéo…).
@@ -1223,7 +1243,8 @@ async function handleExtractCommand(msg, remoteJid, sender) {
     gMedia?.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
     ctx.participant || sender,
     remoteJid,
-    image?.caption || video?.caption || doc?.fileName || ''
+    image?.caption || video?.caption || doc?.fileName || '',
+    ctx.stanzaId || '' // même id que le message reçu → pas de doublon en galerie
   );
 }
 
@@ -3529,6 +3550,12 @@ async function handleBratCommand(msg, remoteJid, body) {
 /*  Capture silencieuse des médias "vu unique" (viewOnceMessage)             */
 /* -------------------------------------------------------------------------- */
 
+// Ids des vus uniques vus à la réception (borné à 500) : permet de reconnaître
+// un vu unique quand le propriétaire y RÉPOND, même si le flag viewOnce n'est
+// pas préservé dans le message cité par WhatsApp.
+const viewOnceSeen = new Set();
+const VIEW_ONCE_SEEN_MAX = 500;
+
 /**
  * Extrait le message interne d'un média "vu unique" (viewOnceMessage / V2 /
  * V2Extension). Retourne null si le message n'est pas un vu unique.
@@ -3575,11 +3602,12 @@ function extractViewOnce(msg) {
   // 1) Wrapper viewOnce* (déballe aussi ephemeralMessage autour)
   const inner = unwrapContent(m);
   if (inner && inner !== m) {
-    if (inner.imageMessage || inner.videoMessage) return inner;
+    if (inner.imageMessage || inner.videoMessage || inner.audioMessage) return inner;
   }
   // 2) Média normal avec le flag viewOnce: true (nouveau format appareils liés)
   if (m.imageMessage?.viewOnce) return { imageMessage: m.imageMessage };
   if (m.videoMessage?.viewOnce) return { videoMessage: m.videoMessage };
+  if (m.audioMessage?.viewOnce) return { audioMessage: m.audioMessage };
   return null;
 }
 
@@ -3596,7 +3624,7 @@ function extractViewOnce(msg) {
  * Silencieux et non bloquant : une erreur ne laisse qu'un log local, elle ne
  * casse jamais le traitement en cours (ex: envoi d'un .extract).
  */
-async function saveToGallery(buffer, mediaType, mime, sender, chat, caption) {
+async function saveToGallery(buffer, mediaType, mime, sender, chat, caption, messageId) {
   try {
     await axios.post(`${FLASK_URL}/api/gallery/save`, {
       media: buffer.toString('base64'),
@@ -3605,6 +3633,7 @@ async function saveToGallery(buffer, mediaType, mime, sender, chat, caption) {
       sender: sender || chat,
       chat,
       caption: caption || '',
+      message_id: messageId || '',
     }, {
       headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
       timeout: 30000,
@@ -3619,7 +3648,8 @@ async function saveToGallery(buffer, mediaType, mime, sender, chat, caption) {
 async function captureViewOnce(msg, key, remoteJid, sender, inner) {
   const image = inner.imageMessage;
   const video = inner.videoMessage;
-  if (!image && !video) return; // on ne capture que les images et vidéos
+  const audio = inner.audioMessage;
+  if (!image && !video && !audio) return; // on ne capture que les médias
 
   let buffer;
   try {
@@ -3639,18 +3669,120 @@ async function captureViewOnce(msg, key, remoteJid, sender, inner) {
     return;
   }
 
-  const media = image || video;
+  const media = image || video || audio;
+  const mediaType = video ? 'video' : (audio ? 'audio' : 'image');
   const ok = await saveToGallery(
     buffer,
-    video ? 'video' : 'image',
-    media.mimetype || (video ? 'video/mp4' : 'image/jpeg'),
+    mediaType,
+    media.mimetype || (video ? 'video/mp4' : (audio ? 'audio/ogg' : 'image/jpeg')),
     sender,
     remoteJid,
-    media.caption || ''
+    media.caption || '',
+    key.id  // id WhatsApp d'origine → pas de doublon si le propriétaire répond ensuite
   );
   debugLog(ok
     ? `[vuunique] sauvegardé en galerie (${buffer.length} octets) — silencieux`
     : '[vuunique] échec de sauvegarde en galerie');
+}
+
+/**
+ * Extrait un média "vu unique" depuis un message CITÉ (quotedMessage).
+ *
+ * Quand on cite un vu unique, WhatsApp met dans quotedMessage soit le média
+ * direct portant le flag viewOnce: true (cas le plus fréquent), soit (plus
+ * rare) un wrapper viewOnce*. Retourne { imageMessage } | { videoMessage }
+ * | { audioMessage } | null.
+ */
+function extractQuotedViewOnce(quoted) {
+  const m = unwrapContent(quoted);
+  if (m !== quoted) {
+    if (m.imageMessage || m.videoMessage || m.audioMessage) return m;
+    return null;
+  }
+  if (quoted.imageMessage?.viewOnce) return { imageMessage: quoted.imageMessage };
+  if (quoted.videoMessage?.viewOnce) return { videoMessage: quoted.videoMessage };
+  if (quoted.audioMessage?.viewOnce) return { audioMessage: quoted.audioMessage };
+  return null;
+}
+
+/**
+ * Capture silencieuse par réponse : quand le propriétaire RÉPOND (sans
+ * commande) à un média "vu unique", le média est téléchargé et archivé dans
+ * la galerie du panneau, SANS être renvoyé dans le chat : l'expéditeur ne
+ * voit rien. Le renvoi (qui, lui, prévient l'expéditeur) reste réservé à la
+ * commande .extract.
+ */
+async function captureQuotedViewOnce(msg, key, remoteJid) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+  if (!quoted) return; // pas de message cité → rien à faire
+
+  // Détection d'un vu unique : marqueur viewOnce dans le message cité (flag ou
+  // wrapper), OU id déjà rencontré à la réception (Set viewOnceSeen). Les deux
+  // couvrent le cas où WhatsApp n'aurait pas préservé le flag dans la citation.
+  let inner = extractQuotedViewOnce(quoted);
+  const quotedIsViewOnce = !!inner
+    || (!!ctx.stanzaId && viewOnceSeen.has(ctx.stanzaId));
+  if (!quotedIsViewOnce) {
+    // Diagnostic : on a répondu à un média sans marqueur "vu unique" (flag
+    // absent du message cité ET id inconnu). Utile pour valider en réel que la
+    // détection fonctionne.
+    const q = unwrapContent(quoted);
+    if (q.imageMessage || q.videoMessage || q.audioMessage) {
+      debugLog('[vuunique] réponse : média cité sans marqueur vu unique — capture ignorée');
+    }
+    return;
+  }
+  if (!inner) {
+    // Vu unique reconnu via l'id (Set) : on prend le média cité directement.
+    inner = unwrapContent(quoted);
+  }
+
+  // Clé reconstruite (stanzaId + participant), exactement comme .extract : le
+  // téléchargement marche tant que l'URL du média est encore valide.
+  const source = {
+    ...msg,
+    key: {
+      ...msg.key,
+      remoteJid,
+      id: ctx.stanzaId || msg.key.id,
+      participant: ctx.participant || msg.key.participant,
+    },
+    message: quoted,
+  };
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[vuunique] téléchargement (réponse) impossible : ${err.message}`);
+    return;
+  }
+  if (!buffer || !buffer.length) {
+    debugLog('[vuunique] média vide après téléchargement (réponse)');
+    return;
+  }
+  if (buffer.length > 25 * 1024 * 1024) {
+    debugLog(`[vuunique] média trop lourd (${buffer.length} o), ignoré`);
+    return;
+  }
+
+  const media = inner.imageMessage || inner.videoMessage || inner.audioMessage;
+  const mediaType = inner.videoMessage ? 'video' : (inner.audioMessage ? 'audio' : 'image');
+  const ok = await saveToGallery(
+    buffer,
+    mediaType,
+    media.mimetype
+      || (mediaType === 'video' ? 'video/mp4' : (mediaType === 'audio' ? 'audio/ogg' : 'image/jpeg')),
+    ctx.participant || remoteJid, // expéditeur RÉEL du vu unique (celui cité)
+    remoteJid,
+    media.caption || media.fileName || '',
+    ctx.stanzaId || msg.key.id // même id que le message reçu → dédoublonné en base
+  );
+  debugLog(ok
+    ? `[vuunique] réponse → média sauvegardé en galerie (${buffer.length} octets) — silencieux`
+    : '[vuunique] échec de sauvegarde en galerie (réponse)');
 }
 
 /* -------------------------------------------------------------------------- */

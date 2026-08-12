@@ -228,6 +228,7 @@ class GalleryItem(db.Model):
     caption = db.Column(db.String(500), default="", nullable=False)
     size = db.Column(db.Integer, default=0, nullable=False)
     timestamp = db.Column(db.String(40), default=utc_now_iso)
+    message_id = db.Column(db.String(80), default="", nullable=False)  # id WhatsApp du message d'origine (dédoublonnage)
 
     def to_dict(self):
         return {
@@ -238,6 +239,7 @@ class GalleryItem(db.Model):
             "mime": self.mime,
             "filename": self.filename,
             "caption": self.caption or "",
+            "message_id": self.message_id or "",
             "size": self.size,
             "timestamp": self.timestamp,
             "url": f"/api/gallery/{self.id}/file",
@@ -293,6 +295,9 @@ def _ensure_columns(app):
         "command_logs": [
             ("chat", "VARCHAR(100) DEFAULT ''"),
             ("sender", "VARCHAR(100) DEFAULT ''"),
+        ],
+        "gallery_items": [
+            ("message_id", "VARCHAR(80) DEFAULT ''"),
         ],
     }.items():
         for column_name, definition in columns:

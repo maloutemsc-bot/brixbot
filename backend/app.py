@@ -1118,6 +1118,16 @@ def gallery_save():
                 "document": "application/octet-stream"}.get(media_type, "image/jpeg")
     ext = _GALLERY_EXT[mime]
 
+    # Dédoublonnage : si ce message WhatsApp a déjà été archivé (capture à la
+    # réception, réponse du propriétaire ou .extract), on ne l'enregistre pas
+    # deux fois. L'id WhatsApp du message d'origine est stable quel que soit le
+    # moyen de capture (la réponse cite le même id que le message reçu).
+    message_id = str(data.get("message_id", "") or "").strip()
+    if message_id:
+        existing = GalleryItem.query.filter_by(message_id=message_id).first()
+        if existing:
+            return jsonify({"ok": True, "id": existing.id, "duplicate": True})
+
     # Nom de fichier sécurisé : jamais construit depuis une entrée client
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     filename = f"{stamp}-{os.urandom(4).hex()}{ext}"
@@ -1135,6 +1145,7 @@ def gallery_save():
         filename=filename,
         caption=str(data.get("caption", "") or "")[:500],
         size=len(media_bytes),
+        message_id=message_id,
     )
     db.session.add(item)
     db.session.commit()
