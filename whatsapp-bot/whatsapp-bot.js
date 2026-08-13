@@ -1948,12 +1948,14 @@ async function handleRevCommand(msg, remoteJid, body) {
     return;
   }
 
-  // Envoi des correspondances (image + source en légende, liens morts ignorés)
+  // Envoi des correspondances (image + source en légende, liens morts ignorés).
+  // L'URL source (res.url) est essayée d'abord ; si elle est bloquée (anti-
+  // hotlink…), la miniature Yandex (res.thumb) sert de solution de repli.
   let sent = 0;
   const sendOne = async (res, i) => {
     let imgBuffer;
-    try {
-      const imgRes = await axios.get(res.url, {
+    const tryDownload = async (url) => {
+      const imgRes = await axios.get(url, {
         responseType: 'arraybuffer',
         timeout: 20000,
         maxContentLength: REV_MAX_BYTES,
@@ -1961,13 +1963,25 @@ async function handleRevCommand(msg, remoteJid, body) {
       });
       const ctype = String(imgRes.headers['content-type'] || '');
       if (!imgRes.data || !imgRes.data.length || ctype.indexOf('image/') !== 0) {
-        debugLog(`[rev] correspondance non-image ignorée : ${res.url}`);
+        throw new Error('non-image');
+      }
+      return imgRes.data;
+    };
+    try {
+      imgBuffer = await tryDownload(res.url);
+    } catch (err) {
+      debugLog(`[rev] source indisponible (${res.url}) : ${err.message}`);
+      if (res.thumb) {
+        try {
+          imgBuffer = await tryDownload(res.thumb);
+          debugLog(`[rev] repli sur la miniature Yandex : ${res.thumb.slice(0, 90)}`);
+        } catch (err2) {
+          debugLog(`[rev] miniature indisponible (${res.thumb}) : ${err2.message}`);
+          return;
+        }
+      } else {
         return;
       }
-      imgBuffer = imgRes.data;
-    } catch (err) {
-      debugLog(`[rev] téléchargement impossible (${res.url}) : ${err.message}`);
-      return;
     }
     const title = String(res.title || `Correspondance ${i + 1}`).slice(0, 120);
     try {

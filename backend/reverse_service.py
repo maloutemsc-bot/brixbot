@@ -8,9 +8,14 @@ Termux/Android — la leçon apprise avec reliq/pinscrape) :
      sans compte ni clé) → on obtient une URL publique.
   2. Cette URL est envoyée à Yandex Images (rpt=imageview) : le HTML contient
      les résultats "images similaires" (cbirSimilar) sous forme de JSON
-     échappé. On extrait pour chaque résultat son titre + l'URL pleine
-     résolution sur le CDN avatars.mds.yandex.net (téléchargeable, pas de
-     hotlink).
+     échappé. Chaque résultat contient :
+       - imageUrl : miniature Yandex de l'image TROUVÉE (unique par résultat)
+       - title    : titre/source du résultat
+       - linkUrl  : lien interne Yandex, avec le paramètre `img_url` = URL de
+         l'image trouvée sur le site SOURCE (celle qu'on envoie à l'utilisateur)
+     ⚠️ Le paramètre `url=` de linkUrl est l'ID de recherche du CLUSTER
+     (identique pour tous les résultats) — c'était le bug de la v1 : le bot
+     renvoyait l'image cherchée au lieu des images trouvées !
   3. En parallèle, on renvoie les liens de recherche complets (Yandex,
      Google Lens) pour que l'utilisateur puisse creuser dans un navigateur.
 
@@ -19,6 +24,10 @@ Limites connues (testées) :
     does not permit API usage"), et search.php HTML répond 403.
   - ascii2d.net : derrière Cloudflare (403 avec requests seul).
   - Bing : searchbyimage renvoie 404.
+  - L'astuce `-images-thumbs` → `-images` pour obtenir la pleine résolution
+    sur le CDN Yandex renvoie 404 ; on utilise donc l'URL source (img_url),
+    qui se télécharge sans problème (testé 5/5), avec la miniature Yandex en
+    solution de repli côté bot si le site source bloque.
   Le service ne dépend donc que de Yandex + catbox, qui fonctionnent.
 
 Le service ne lève JAMAIS d'exception : il renvoie un dict avec `ok: False`
@@ -26,6 +35,7 @@ et un `error` lisible en cas de problème (le bot affiche un message propre).
 """
 
 import html as html_mod
+import json
 import re
 from urllib.parse import unquote
 
@@ -97,47 +107,45 @@ def upload_to_catbox(image_bytes, filename="image.jpg"):
 #  Yandex — recherche d'images similaires (cbir)
 # --------------------------------------------------------------------------- #
 
-# Un résultat dans le JSON échappé de la page (dé-échappé avant parsing) :
-#   {"imageUrl":"//avatars.mds.yandex.net/i?id=...&n=13","width":...,"height":...,
-#    "title":"...","linkUrl":"/images/search?url=https%3A%2F%2F...%2Forig&img_url=..."}
-_RESULT_RE = re.compile(
-    r'\{"imageUrl":"(.*?)".*?"title":"(.*?)".*?"linkUrl":"(.*?)"\}',
-    re.S,
-)
+# Chaque résultat est un objet JSON PLAT (aucune accolade imbriquée) dans le
+# tableau "thumbs". On le capture avec \{.*?\} puis on le parse avec
+# json.loads — beaucoup plus robuste qu'une méga-regex de regroupement.
+_RESULT_OBJ_RE = re.compile(r"\{.*?\}", re.S)
 
 
 def _extract_results(html_text, limit):
     """
     Extrait les résultats "images similaires" (cbirSimilar.thumbs) du HTML
-    Yandex dé-échappé. Renvoie une liste de dicts {title, url, src} :
-      - url  : image pleine résolution sur avatars.mds.yandex.net (CDN fiable)
-      - src  : URL de l'image d'origine sur le site source (si dispo)
-      - title: titre/source du résultat
+    Yandex dé-échappé. Renvoie une liste de dicts {title, url, thumb} :
+      - url   : image TROUVÉE sur le site source (param img_url de linkUrl)
+      - thumb : miniature Yandex de l'image trouvée (repli si source bloquée)
+      - title : titre/source du résultat
     """
     start = html_text.find("cbirSimilar")
     if start == -1:
         return []
     zone = html_text[start:start + 500000]
     results = []
-    for image_url, title, link_url in _RESULT_RE.findall(zone):
-        thumb = image_url
+    for match in _RESULT_OBJ_RE.finditer(zone):
+        try:
+            obj = json.loads(match.group(0))
+        except (ValueError, TypeError):
+            continue
+        if "imageUrl" not in obj or "linkUrl" not in obj:
+            continue
+        thumb = obj.get("imageUrl", "")
         if thumb.startswith("//"):
             thumb = "https:" + thumb
-        full = ""
-        m = re.search(r"[?&]url=([^&]+)", link_url)
-        if m:
-            full = unquote(m.group(1))
+        # URL de l'image trouvée sur le site source (param img_url de linkUrl)
         src = ""
-        m2 = re.search(r"[?&]img_url=([^&]+)", link_url)
-        if m2:
-            src = unquote(m2.group(1))
-        # On ne garde que les images pleine résolution sur le CDN Yandex
-        if not full.startswith("https://avatars.mds.yandex.net/"):
+        m = re.search(r"[?&]img_url=([^&]+)", obj.get("linkUrl", ""))
+        if m:
+            src = unquote(m.group(1))
+        if not src:
             continue
         results.append({
-            "title": html_mod.unescape(title).strip(),
-            "url": full,
-            "src": src,
+            "title": html_mod.unescape(str(obj.get("title", "")).strip()),
+            "url": src,
             "thumb": thumb,
         })
         if len(results) >= limit:
@@ -149,7 +157,7 @@ def search_yandex(image_url, limit=5):
     """
     Recherche inversée Yandex pour une URL d'image publique.
     Renvoie (results, reachable) :
-      - results : liste de dicts {title, url, src, thumb} (max `limit`)
+      - results : liste de dicts {title, url, thumb} (max `limit`)
       - reachable : False si yandex.com n'a pas répondu (réseau bloqué…)
     Ne lève jamais d'exception.
     """
@@ -181,8 +189,8 @@ def reverse_search(image_bytes, filename="image.jpg", limit=5):
         "ok": True,
         "catbox_url": "https://files.catbox.moe/...",
         "total": 40,                      # résultats trouvés par Yandex
-        "results": [ {"title", "url", "src", "thumb"}, ... ],  # jusqu'à `limit`
-        "links": { "yandex": "...", "lens": "..." },           # liens complets
+        "results": [ {"title", "url", "thumb"}, ... ],  # jusqu'à `limit`
+        "links": { "yandex": "...", "lens": "..." },    # liens complets
       }
     ou {"ok": False, "error": "..."} en cas de problème. Ne lève jamais.
     """
