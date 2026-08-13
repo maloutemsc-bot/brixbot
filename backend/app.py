@@ -963,6 +963,44 @@ def make_sticker():
 
 
 # --------------------------------------------------------------------------- #
+#  Sticker → image — commande .image (l'inverse de .sticker). Pillow décode le
+#  WebP et ré-encode en PNG (la transparence des stickers est conservée).
+# --------------------------------------------------------------------------- #
+@app.route("/api/sticker-to-image", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def sticker_to_image():
+    """
+    Convertit le sticker WebP reçu (body brut) en image PNG.
+
+    Utilisé par le bot Node.js pour la commande .image quand sharp n'est pas
+    installable (Termux/Android) : le bot envoie les octets du sticker ici,
+    Pillow décode le WebP (première frame pour un sticker animé) et ré-encode
+    en PNG — la transparence est conservée. Réponse : PNG brut.
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return jsonify({"ok": False, "error": "Pillow non installé sur le backend (python-pillow requis pour .image)."}), 503
+
+    raw = request.get_data()
+    if not raw:
+        return jsonify({"ok": False, "error": "Sticker manquant."}), 400
+    if len(raw) > 15 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Sticker trop lourd (> 15 Mo)."}), 400
+
+    try:
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        # PNG conserve la transparence des stickers (fond transparent)
+        img = img.convert("RGBA")
+        out = io.BytesIO()
+        img.save(out, "PNG")
+        return Response(out.getvalue(), mimetype="image/png")
+    except Exception as exc:  # format inconnu / sticker corrompu
+        return jsonify({"ok": False, "error": f"Conversion impossible : {exc}"}), 422
+
+
+# --------------------------------------------------------------------------- #
 #  Stickers brat — esthétique Charli XCX : fond blanc, texte minuscules noir,
 #  police condensée + grain. Généré par Pillow (backend/brat_service.py).
 # --------------------------------------------------------------------------- #

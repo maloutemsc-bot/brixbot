@@ -943,8 +943,8 @@ async function handleMessage(msg) {
   // Messages sans texte (photos, vidéos, documents…) : rien à traiter
   if (!trimmed) return;
 
-  // --- Commandes médias gérées directement par le bot (.sticker / .yt / .extract) ---
-  if (/^\.(sticker|yt|audio|extract)\b/i.test(trimmed)) {
+  // --- Commandes médias gérées directement par le bot (.sticker / .image / .yt / .extract) ---
+  if (/^\.(sticker|image|yt|audio|extract)\b/i.test(trimmed)) {
     debugLog(`[media] commande locale : ${trimmed}`);
     handleMediaCommand(msg, key, trimmed, sender).catch((err) => {
       debugLog(`[media] erreur : ${err.message}`);
@@ -1205,6 +1205,9 @@ async function handleMediaCommand(msg, key, body, sender) {
   if (/^\.sticker\b/i.test(body)) {
     return handleStickerCommand(msg, remoteJid);
   }
+  if (/^\.image\b/i.test(body)) {
+    return handleImageCommand(msg, remoteJid);
+  }
   if (/^\.extract\b/i.test(body)) {
     return handleExtractCommand(msg, remoteJid, sender);
   }
@@ -1279,6 +1282,74 @@ async function handleStickerCommand(msg, remoteJid) {
     const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
     debugLog(`[sticker] conversion impossible : ${detail}`);
     return replyError(remoteJid, '❌ Impossible de convertir cette image en sticker.', msg);
+  }
+}
+
+/**
+ * .image — transforme un sticker en image PNG (l'inverse de .sticker).
+ *
+ * Le sticker peut être le message courant (sticker envoyé avec la légende
+ * ".image") ou le message cité (réponse ".image" à un sticker). Un sticker
+ * animé est converti en image fixe (première frame). La transparence est
+ * conservée (PNG).
+ */
+async function handleImageCommand(msg, remoteJid) {
+  const current = msg.message || {};
+  const quoted = current.extendedTextMessage?.contextInfo?.quotedMessage || null;
+
+  // Sticker du message courant (légende .image) ou sticker cité
+  const source = current.stickerMessage
+    ? msg
+    : (quoted?.stickerMessage ? { ...msg, message: quoted } : null);
+
+  if (!source) {
+    return replyError(remoteJid,
+      '🖼 *Commande .image*\n'
+      + 'Envoyez un sticker avec la légende `.image`\n'
+      + '— ou —\n'
+      + 'RÉPONDEZ à un sticker avec `.image`.\n'
+      + 'Le bot le transforme en image (PNG).', msg);
+  }
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[image] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger le sticker. Réessayez.', msg);
+  }
+
+  try {
+    let png;
+    if (sharp) {
+      // Conversion locale (sharp) — rapide, aucun réseau
+      png = await sharp(buffer, { animated: false })
+        .png()
+        .toBuffer();
+    } else {
+      // sharp indisponible (Termux/Android) : conversion via le backend Flask
+      // (Pillow décode le WebP et ré-encode en PNG, transparence conservée).
+      debugLog('[image] sharp absent → conversion via le backend (Pillow)');
+      const { data } = await axios.post(`${FLASK_URL}/api/sticker-to-image`, buffer, {
+        headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/octet-stream' },
+        timeout: 30000,
+        responseType: 'arraybuffer',
+      });
+      if (!data || !data.length) {
+        throw new Error('réponse backend vide');
+      }
+      png = Buffer.from(data);
+    }
+
+    await sock.sendMessage(remoteJid, { image: png, caption: '🖼 Sticker → image' }, { quoted: msg });
+    debugLog(`[image] envoyé (${png.length} octets)`);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🖼 [sticker → image]`);
+  } catch (err) {
+    // Avec responseType arraybuffer, l'erreur backend (400/422) arrive en Buffer
+    const buf = err.response?.data;
+    const detail = (buf && Buffer.isBuffer(buf)) ? String(buf) : err.message;
+    debugLog(`[image] conversion impossible : ${detail}`);
+    return replyError(remoteJid, '❌ Impossible de convertir ce sticker en image.', msg);
   }
 }
 
