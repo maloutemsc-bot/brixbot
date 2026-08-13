@@ -244,9 +244,10 @@ function saveMuteStore() {
 }
 loadMuteStore();
 
-// État persistant des fonctionnalités (avertissements, bienvenue, anti-lien, AFK).
+// État persistant des fonctionnalités (avertissements, bienvenue, anti-lien, AFK)
+// + interrupteur général du bot (.bot on/off, voir handleMessage).
 const BOT_STORE = path.join(__dirname, 'bot-store.json');
-let botState = { warns: {}, welcome: {}, antilink: {}, afk: {} };
+let botState = { warns: {}, welcome: {}, antilink: {}, afk: {}, botEnabled: true };
 function loadBotStore() {
   try {
     const parsed = JSON.parse(fs.readFileSync(BOT_STORE, 'utf8'));
@@ -256,6 +257,10 @@ function loadBotStore() {
   botState.welcome = botState.welcome || {};
   botState.antilink = botState.antilink || {};
   botState.afk = botState.afk || {};
+  // Conversations désactivées individuellement (.conv off).
+  botState.convOff = botState.convOff || {};
+  // Interrupteur général : absent de l'ancien stockage → actif par défaut.
+  botState.botEnabled = botState.botEnabled !== false;
 }
 function saveBotStore() {
   try { fs.writeFileSync(BOT_STORE, JSON.stringify(botState)); } catch (_) { /* non bloquant */ }
@@ -698,6 +703,127 @@ async function handleMessage(msg) {
   if (key.remoteJid === 'status@broadcast') return;
 
   const trimmed = (body || '').trim();
+
+  // --- Interrupteur général du bot : .bot on / .bot off (réservé au
+  // propriétaire = compte lié, key.fromMe) ---
+  // Quand le bot est ÉTEINT, il ne répond plus à RIEN (ni commandes, ni IA,
+  // ni réactions : suppressions, anti-lien, AFK, vu unique…) — sauf à `.bot on`
+  // pour le rallumer. L'état est persistant (bot-store.json) et survit aux
+  // redémarrages : idéal pour couper le bot à distance sans le tuer.
+  if (key.fromMe && /^\.bot\b/i.test(trimmed)) {
+    const arg = (trimmed.replace(/^\.bot\s*/i, '') || '').trim().toLowerCase();
+    if (arg === 'on') {
+      botState.botEnabled = true;
+      saveBotStore();
+      debugLog('[bot] réactivé par le propriétaire');
+      transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✅ bot réactivé`);
+      if (sock) {
+        sock.sendMessage(remoteJid, { text: '✅ *Bot réactivé !* Je réponds de nouveau à tout le monde.' }, { quoted: msg }).catch(() => {});
+      }
+    } else if (arg === 'off') {
+      botState.botEnabled = false;
+      saveBotStore();
+      debugLog('[bot] désactivé par le propriétaire');
+      transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ⏸️ bot désactivé`);
+      if (sock) {
+        sock.sendMessage(remoteJid, { text: '⏸️ *Bot désactivé.* Je ne répondrai plus à personne — tapez `.bot on` pour me réactiver.' }, { quoted: msg }).catch(() => {});
+      }
+    } else if (arg === 'status') {
+      const etat = botState.botEnabled === false ? '⏸️ ÉTEINT' : '🟢 ACTIF';
+      if (sock) {
+        sock.sendMessage(remoteJid, { text: `🤖 *État du bot :* ${etat}\n\n_Commandes : .bot on · .bot off · .bot status_` }, { quoted: msg }).catch(() => {});
+      }
+    } else {
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: '🤖 *Commande .bot*\n\n'
+            + '`.bot on` — réactive le bot\n'
+            + '`.bot off` — désactive le bot (il ignore tout sauf `.bot on`)\n'
+            + '`.bot status` — état actuel\n\n'
+            + '_Réservé au propriétaire._',
+        }, { quoted: msg }).catch(() => {});
+      }
+    }
+    return;
+  }
+
+  // Interrupteur général : bot éteint → on IGNORE tout (le .bot on est déjà
+  // traité ci-dessus). Le transcript continue d'être enregistré (passif, sans
+  // réaction).
+  if (botState.botEnabled === false) {
+    debugLog(`[bot] éteint — message ignoré (jid=${remoteJid})`);
+    return;
+  }
+
+  // --- Désactivation PAR CONVERSATION : .conv on / .conv off (réservé au
+  // propriétaire = compte lié) ---
+  // Contrairement à .bot (global), .conv ne coupe le bot que dans une
+  // conversation précise. Sans argument, ça s'applique à la conversation
+  // courante ; on peut aussi passer un numéro/jid explicite :
+  //   .conv off                → désactive dans CE chat
+  //   .conv off 33612345678    → désactive ce numéro (où qu'on soit)
+  //   .conv on                 → réactive ce chat
+  //   .conv list               → liste les conversations désactivées
+  if (key.fromMe && /^\.conv\b/i.test(trimmed)) {
+    const arg = (trimmed.replace(/^\.conv\s*/i, '') || '').trim().toLowerCase();
+    if (arg === 'list') {
+      const keys = Object.keys(botState.convOff || {});
+      const lines = keys.length
+        ? keys.map((k) => `• ${k} (${contactLabel(k)})`)
+        : ['Aucune conversation désactivée.'];
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: '🔇 *Conversations désactivées*\n\n' + lines.join('\n'),
+        }, { quoted: msg }).catch(() => {});
+      }
+      return;
+    }
+    const m = /^(on|off)(?:\s+(\S+))?$/i.exec(arg);
+    if (!m) {
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: '🔇 *Commande .conv*\n\n'
+            + '`.conv off` — désactive le bot dans CE chat\n'
+            + '`.conv on` — réactive ce chat\n'
+            + '`.conv off <numéro>` — désactive un autre chat (ex: `.conv off 33612345678`)\n'
+            + '`.conv list` — liste les conversations désactivées\n\n'
+            + '_Réservé au propriétaire._',
+        }, { quoted: msg }).catch(() => {});
+      }
+      return;
+    }
+    const turnOn = m[1] === 'on';
+    const target = m[2] || remoteJid;
+    const targetLocal = jidLocal(target);
+    const offMap = (botState.convOff = botState.convOff || {});
+    if (turnOn) {
+      delete offMap[targetLocal];
+      debugLog(`[conv] réactivée : ${targetLocal}`);
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: `✅ *Bot réactivé* dans ${contactLabel(target)}. Je réponds de nouveau ici.`,
+        }, { quoted: msg }).catch(() => {});
+      }
+    } else {
+      offMap[targetLocal] = true;
+      debugLog(`[conv] désactivée : ${targetLocal}`);
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: `🔇 *Bot désactivé* dans ${contactLabel(target)}. Je n'y répondrai plus — tapez \`.conv on\` ici (ou ailleurs avec \`.conv on ${targetLocal}\`) pour réactiver.`,
+        }, { quoted: msg }).catch(() => {});
+      }
+    }
+    saveBotStore();
+    return;
+  }
+
+  // Conversation désactivée (.conv off) : on ignore TOUT ici (le .conv on du
+  // propriétaire est déjà traité ci-dessus). Le transcript continue d'être
+  // enregistré (passif, sans réaction).
+  if (botState.convOff && botState.convOff[jidLocal(remoteJid)]) {
+    debugLog(`[conv] éteinte — message ignoré (jid=${remoteJid})`);
+    return;
+  }
 
   // AFK : l'expéditeur était absent → il est de retour (statut effacé).
   // Placé AVANT le garde-fou fromMe : même le propriétaire voit son AFK
