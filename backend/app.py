@@ -43,6 +43,7 @@ import brat_service
 import brixhub_service
 import imagine_service
 import pinterest_service
+import pornpics_service
 import rule34_service
 import shazam_service
 import whatsapp_handler
@@ -1298,6 +1299,47 @@ def nsfw_search():
         "urls": urls,
         "reachable": bool(result.get("reachable")),
         "rule34_available": rule34_service.available(),
+    })
+
+
+# --------------------------------------------------------------------------- #
+#  PornPics — commande CACHÉE .xxx (photos réelles, parsing HTML requests seul)
+# --------------------------------------------------------------------------- #
+@app.route("/api/xxx/search", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def xxx_search():
+    """
+    Recherche d'images pornpics.com (commande cachée .xxx — photos réelles,
+    le pendant non-anime de .nsfw).
+
+    Appelé par le bot Node.js pour la commande .xxx. La recherche est faite
+    par pornpics_service (parsing HTML direct avec requests SEUL — aucune
+    dépendance lourde, fonctionne aussi sur Termux/Android) : une seule
+    requête à pornpics.com, URLs du CDN cdni mises à la pleine résolution
+    (1280), HEAD de vérification, le tout en thread avec un timeout global.
+    Le service ne lève jamais d'exception. Si rien n'est trouvé, le bot
+    affiche une erreur propre — jamais d'échec bloquant.
+    """
+    data = request.get_json(silent=True) or {}
+    query = str(data.get("query", "") or "").strip()
+    try:
+        count = max(1, min(int(data.get("count", 5)), 30))
+    except (TypeError, ValueError):
+        count = 5
+    if not query:
+        return jsonify({"ok": False, "error": "Requête vide."}), 400
+    if len(query) > 200:
+        return jsonify({"ok": False, "error": "Requête trop longue."}), 400
+
+    result = pornpics_service.search(query, count)
+    urls = result.get("urls") or []
+    return jsonify({
+        "ok": True,
+        "source": "pornpics" if urls else "unavailable",
+        "urls": urls,
+        "reachable": bool(result.get("reachable")),
+        "pornpics_available": pornpics_service.available(),
     })
 
 

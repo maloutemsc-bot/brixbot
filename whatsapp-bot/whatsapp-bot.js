@@ -917,6 +917,16 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande CACHÉE .xxx : recherche d'images pornpics.com, photos
+  //     RÉELLES (le pendant non-anime de .nsfw). Hors .help, comme .nsfw. ---
+  if (/^\.xxx\b/i.test(trimmed)) {
+    debugLog(`[xxx] commande : ${trimmed}`);
+    handleXxxCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[xxx] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande secrète : simulation (à découvrir !) ---
   if (/^\.hack\b/i.test(trimmed)) {
     debugLog(`[secrete] commande : ${trimmed}`);
@@ -2321,6 +2331,139 @@ async function handleNsfwCommand(msg, remoteJid, body) {
   }
   debugLog(`[nsfw] ${sent} image(s) envoyée(s) pour « ${query} » (source : ${items[0]?.source})`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔞 ${sent} image(s) pour « ${query} » (rule34.xxx)`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .xxx — images pornpics.com (photos RÉELLES, pendant de .nsfw)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Recherche d'images pornpics.com (commande CACHÉE .xxx, hors .help).
+ *
+ * Même fonctionnement que .nsfw, mais avec du contenu réel (non-anime) :
+ * .nsfw → rule34.xxx, .xxx → pornpics.com. La recherche se fait ENTIÈREMENT
+ * côté backend (pornpics_service, thread + timeout) : le bot ne fait que
+ * télécharger et envoyer les images reçues.
+ */
+async function handleXxxCommand(msg, remoteJid, body) {
+  let rest = body.replace(/^\.xxx\s*/i, '').trim();
+  let count = PIN_DEFAULT_COUNT;
+  let query = rest;
+
+  // Nombre optionnel au début : ".xxx 3 milf" → 3 images de "milf"
+  const firstWord = rest.split(' ')[0] || '';
+  const parsedCount = parseInt(firstWord, 10);
+  if (String(parsedCount) === firstWord && parsedCount > 0) {
+    count = Math.min(parsedCount, PIN_MAX_COUNT);
+    query = rest.slice(firstWord.length).trim();
+  }
+
+  if (!query) {
+    return replyError(remoteJid,
+      '🔞 *Commande .xxx* (cachée)\n'
+      + 'Envoie des photos réelles pornpics.com correspondant à une recherche.\n\n'
+      + 'Utilisation :\n'
+      + '• `.xxx milf` — 5 photos\n'
+      + '• `.xxx 3 big ass` — 3 photos (nombre optionnel, 1 à 10)\n\n'
+      + '⚠️ Contenu adulte uniquement. Cette commande n\'apparaît pas dans .help.', msg);
+  }
+
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: `🔞 Recherche sur pornpics.com pour « ${query} »… (photos réelles)`,
+    }).catch(() => {});
+  }
+
+  // La recherche est déléguée au backend (pornpics_service, requests seul :
+  // aucune dépendance lourde, fonctionne aussi sur Termux). Le service
+  // renvoie des URLs du CDN cdni en pleine résolution (1280) avec une marge
+  // interne : inutile d'en demander plus que le nombre voulu.
+  const fetchCount = Math.min(count, 30);
+  let items = []; // [{url, source}]
+  let xxxDiag = { network: false, http: null, avail: null };
+  try {
+    const res = await axios.post(`${FLASK_URL}/api/xxx/search`, {
+      query,
+      count: fetchCount,
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 50000,
+    });
+    if (res.data?.ok && Array.isArray(res.data.urls) && res.data.urls.length) {
+      items = res.data.urls.map((u) => ({ url: u, source: 'PornPics' }));
+      debugLog(`[xxx] pornpics.com : ${items.length} URL(s)`);
+    } else {
+      // Diagnostic précis : aide à comprendre pourquoi la recherche a échoué
+      // (route inconnue = backend pas redémarré après update, avail=false =
+      // source=unavailable = aucun résultat trouvé par pornpics.com).
+      const body = res.data || {};
+      xxxDiag.http = res.status || null;
+      xxxDiag.avail = body.pornpics_available;
+      xxxDiag.reachable = body.reachable;
+      debugLog(`[xxx] aucune URL (http=${res.status || '?'}, source=${body.source || '?'}, avail=${body.pornpics_available}, reachable=${body.reachable}, error=${body.error || '-'})`);
+    }
+  } catch (err) {
+    // Backend injoignable (down, timeout…) : message d'erreur distinct plus bas.
+    xxxDiag.network = true;
+    debugLog(`[xxx] backend injoignable : ${err.message}`);
+  }
+
+  if (!items.length) {
+    // Message d'erreur adapté à la cause (le détail complet est dans le log).
+    let reason = `❌ Aucune image trouvée pour « ${query} ». Réessayez.`;
+    if (xxxDiag.network) {
+      reason = '❌ Backend injoignable : vérifiez qu\'il est bien démarré.';
+    } else if (xxxDiag.http === 404) {
+      reason = '❌ Backend pas à jour : relancez `bash termux/update.sh` puis redémarrez le bot.';
+    } else if (xxxDiag.reachable === false) {
+      reason = '❌ pornpics.com est injoignable depuis ce réseau (le site adulte peut être bloqué par ton opérateur/Wi-Fi). Essaie avec un VPN.';
+    }
+    return replyError(remoteJid, reason, msg);
+  }
+
+  // Téléchargement puis envoi, image par image (les liens morts sont ignorés).
+  let sent = 0;
+  const sendOne = async (item) => {
+    const url = item.url;
+    let buffer;
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 15000,
+        maxContentLength: PIN_MAX_BYTES,
+        headers: { 'User-Agent': PIN_UA },
+      });
+      // Garde-fou : certains liens renvoient une page HTML au lieu d'une image
+      const ctype = String(res.headers['content-type'] || '');
+      if (!res.data || !res.data.length || ctype.indexOf('image/') !== 0) {
+        debugLog(`[xxx] lien non-image ignoré : ${url}`);
+        return;
+      }
+      buffer = res.data;
+    } catch (err) {
+      debugLog(`[xxx] téléchargement impossible (${url}) : ${err.message}`);
+      return;
+    }
+    try {
+      await sock.sendMessage(remoteJid, {
+        image: buffer,
+        caption: `🔞 *${query}* (${sent + 1}/${count}) · ${item.source}`,
+      }, { quoted: msg });
+      sent++;
+    } catch (err) {
+      debugLog(`[xxx] envoi impossible (${url}) : ${err.message}`);
+    }
+  };
+
+  for (let i = 0; i < items.length && sent < count; i++) {
+    await sendOne(items[i]);
+  }
+
+  if (!sent) {
+    return replyError(remoteJid, "❌ Aucune image n'a pu être envoyée. Réessayez.", msg);
+  }
+  debugLog(`[xxx] ${sent} image(s) envoyée(s) pour « ${query} » (source : ${items[0]?.source})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔞 ${sent} image(s) pour « ${query} » (pornpics.com)`);
 }
 
 /* -------------------------------------------------------------------------- */

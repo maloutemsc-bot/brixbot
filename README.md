@@ -393,6 +393,7 @@ identifiants de groupe, réglables dans le panneau ou via `.ia oui`).
 | Commande | Description |
 |---|---|
 | `.nsfw [nombre] tags` | Envoie des images rule34.xxx (contenu adulte). Ex : `.nsfw 3 neko`, `.nsfw cat_girl blue_eyes` (espaces = +, `_` dans un tag) — parsing HTML direct (`requests` seul, aucune dépendance lourde) |
+| `.xxx [nombre] mots` | Comme `.nsfw` mais avec des **photos réelles** : images pornpics.com (CDN cdni, pleine résolution 1280). Ex : `.xxx 3 big ass` — parsing HTML direct (`requests` seul, aucune dépendance lourde) |
 
 **Formatage des réponses `.search` :**
 
