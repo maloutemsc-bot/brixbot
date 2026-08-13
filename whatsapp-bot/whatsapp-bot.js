@@ -997,6 +997,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .rev : recherche d'images inversée (Yandex + catbox) ---
+  if (/^\.rev\b/i.test(trimmed)) {
+    debugLog(`[rev] commande : ${trimmed}`);
+    handleRevCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[rev] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande .translate : traduction vers la langue choisie ---
   if (/^\.translate\b/i.test(trimmed)) {
     debugLog(`[translate] commande : ${trimmed}`);
@@ -1832,6 +1841,166 @@ async function handleOcrCommand(msg, remoteJid) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Commande .rev — recherche d'images inversée (catbox + Yandex, sans clé)    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * .rev — recherche d'images inversée.
+ *
+ * Répondez à une photo avec `.rev` (ou envoyez une photo avec la légende
+ * `.rev`) : le bot upload l'image sur catbox.moe (hébergement anonyme, sans
+ * compte ni clé), puis cherche les images similaires sur Yandex Images
+ * (gratuit, sans clé). Il envoie les N meilleures correspondances en pleine
+ * résolution avec leur source, puis les liens Google Lens / Yandex pour
+ * creuser dans un navigateur.
+ *
+ * Le travail est fait ENTIÈREMENT côté backend (reverse_service, requests
+ * seul — aucune dépendance lourde, compatible Termux). Le bot ne fait que
+ * télécharger l'image, l'envoyer au backend, puis télécharger et envoyer les
+ * correspondances reçues.
+ */
+async function handleRevCommand(msg, remoteJid, body) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+
+  // Image source : message courant (légende .rev) ou image citée
+  let source = null;
+  if (current.imageMessage) {
+    source = msg;
+  } else if (quoted?.imageMessage) {
+    source = {
+      ...msg,
+      key: {
+        ...msg.key,
+        remoteJid,
+        id: ctx.stanzaId || msg.key.id,
+        participant: ctx.participant || msg.key.participant,
+      },
+      message: quoted,
+    };
+  }
+
+  if (!source) {
+    return replyError(remoteJid,
+      '🔍 *Commande .rev*\n'
+      + 'RÉPONDEZ à une photo avec `.rev`\n'
+      + '— ou —\n'
+      + 'Envoyez une photo avec la légende `.rev`.\n'
+      + 'Le bot cherche les images similaires (Yandex) et leurs sources.', msg);
+  }
+
+  // Nombre de correspondances voulu (optionnel) : ".rev 3" en légende
+  let count = REV_DEFAULT_COUNT;
+  const rest = String(body || '').replace(/^\.rev\s*/i, '').trim();
+  const firstWord = rest.split(' ')[0] || '';
+  const parsedCount = parseInt(firstWord, 10);
+  if (String(parsedCount) === firstWord && parsedCount > 0) {
+    count = Math.min(parsedCount, REV_MAX_COUNT);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: '🔍 Recherche inversée… (quelques secondes)' }).catch(() => {});
+
+  let buffer;
+  try {
+    buffer = await downloadMediaMessage(source, 'buffer', {});
+  } catch (err) {
+    debugLog(`[rev] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger l\'image. Réessayez.', msg);
+  }
+  if (buffer.length > REV_MAX_BYTES) {
+    return replyError(remoteJid, '❌ Image trop volumineuse (20 Mo max).', msg);
+  }
+
+  let data;
+  try {
+    const { data: res } = await axios.post(`${FLASK_URL}/api/rev`, {
+      image: buffer.toString('base64'),
+      filename: 'image.jpg',
+      count,
+    }, {
+      headers: { 'X-Bot-Key': BOT_API_KEY, 'Content-Type': 'application/json' },
+      timeout: 90000,
+    });
+    data = res;
+  } catch (err) {
+    debugLog(`[rev] erreur backend : ${err.message}`);
+    return replyError(remoteJid,
+      '❌ Erreur lors de la recherche. Vérifiez que le backend est démarré, puis réessayez.', msg);
+  }
+
+  if (!data?.ok) {
+    debugLog(`[rev] refusé : ${data?.error || 'inconnu'}`);
+    return replyError(remoteJid, `❌ ${data?.error || 'Recherche impossible.'}`, msg);
+  }
+
+  const results = Array.isArray(data.results) ? data.results : [];
+  const links = data.links || {};
+
+  if (!results.length) {
+    // Aucune correspondance : on renvoie quand même les liens utiles
+    const lines = ['🔍 *Aucune image similaire trouvée*', ''];
+    if (data.catbox_url) lines.push(`🖼️ Image analysée : ${data.catbox_url}`);
+    if (links.yandex) lines.push('', `🔗 Recherche Yandex : ${links.yandex}`);
+    if (links.lens) lines.push(`🔗 Google Lens : ${links.lens}`);
+    await sendChunks(remoteJid, lines.join('\n'), msg);
+    debugLog(`[rev] aucun résultat (total=${data.total})`);
+    return;
+  }
+
+  // Envoi des correspondances (image + source en légende, liens morts ignorés)
+  let sent = 0;
+  const sendOne = async (res, i) => {
+    let imgBuffer;
+    try {
+      const imgRes = await axios.get(res.url, {
+        responseType: 'arraybuffer',
+        timeout: 20000,
+        maxContentLength: REV_MAX_BYTES,
+        headers: { 'User-Agent': REV_UA },
+      });
+      const ctype = String(imgRes.headers['content-type'] || '');
+      if (!imgRes.data || !imgRes.data.length || ctype.indexOf('image/') !== 0) {
+        debugLog(`[rev] correspondance non-image ignorée : ${res.url}`);
+        return;
+      }
+      imgBuffer = imgRes.data;
+    } catch (err) {
+      debugLog(`[rev] téléchargement impossible (${res.url}) : ${err.message}`);
+      return;
+    }
+    const title = String(res.title || `Correspondance ${i + 1}`).slice(0, 120);
+    try {
+      await sock.sendMessage(remoteJid, {
+        image: imgBuffer,
+        caption: `🔍 *Correspondance ${i + 1}/${results.length}*\n${title}`,
+      }, { quoted: msg });
+      sent++;
+    } catch (err) {
+      debugLog(`[rev] envoi impossible : ${err.message}`);
+    }
+  };
+
+  for (let i = 0; i < results.length && sent < count; i++) {
+    await sendOne(results[i], i);
+  }
+
+  // Récapitulatif + liens pour creuser dans un navigateur
+  const lines = [`🔍 *${sent} correspondance(s) envoyée(s)*`];
+  if (data.catbox_url) lines.push('', `🖼️ Image analysée : ${data.catbox_url}`);
+  if (links.yandex) lines.push('', `🔗 Recherche complète Yandex : ${links.yandex}`);
+  if (links.lens) lines.push(`🔗 Google Lens : ${links.lens}`);
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+
+  if (!sent) {
+    debugLog('[rev] aucune correspondance envoyée');
+    return;
+  }
+  debugLog(`[rev] ${sent} correspondance(s) envoyée(s) (total=${data.total || results.length})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔍 [rev] ${sent} correspondance(s) envoyée(s)`);
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Commande .translate — traduction (Google Translate, gratuit, sans clé)     */
 /* -------------------------------------------------------------------------- */
 
@@ -2092,6 +2261,15 @@ const PIN_MAX_COUNT = 10;
 const PIN_MAX_BYTES = 15 * 1024 * 1024;
 // User-Agent commun pour les services d'images (évite les blocages)
 const PIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
+
+// --- .rev (recherche d'images inversée) : mêmes garde-fous que .pin ---
+// Nombre de correspondances envoyées par défaut (et maximum)
+const REV_DEFAULT_COUNT = 5;
+const REV_MAX_COUNT = 10;
+// Taille max d'une image (envoi au backend : 20 Mo, et téléchargement des
+// correspondances Yandex : même limite pour rester simple)
+const REV_MAX_BYTES = 20 * 1024 * 1024;
+const REV_UA = PIN_UA;
 
 /**
  * Recherche des URLs d'images sur DuckDuckGo Images (gratuit, sans clé API).

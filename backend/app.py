@@ -44,6 +44,7 @@ import brixhub_service
 import imagine_service
 import pinterest_service
 import pornpics_service
+import reverse_service
 import rule34_service
 import shazam_service
 import whatsapp_handler
@@ -1341,6 +1342,43 @@ def xxx_search():
         "reachable": bool(result.get("reachable")),
         "pornpics_available": pornpics_service.available(),
     })
+
+
+# --------------------------------------------------------------------------- #
+#  Recherche d'images inversée — commande .rev (catbox + Yandex, sans clé)
+# --------------------------------------------------------------------------- #
+@app.route("/api/rev", methods=["POST"])
+@require_bot_key
+@limiter.limit("30 per minute")
+def reverse_image_search():
+    """
+    Recherche d'images inversée (commande .rev).
+
+    Corps JSON : {"image": "<base64 jpeg>", "count": 5, "filename": "..."}.
+    Appelé par le bot Node.js : l'image est uploadée anonymement sur catbox.moe
+    puis cherchée sur Yandex Images (rpt=imageview) — le tout avec `requests`
+    SEUL (aucune dépendance lourde, fonctionne aussi sur Termux/Android).
+    Le service ne lève jamais d'exception : la réponse est toujours un JSON
+    propre avec `ok` et, en cas d'échec, un `error` lisible.
+    """
+    data = request.get_json(silent=True) or {}
+    image_b64 = str(data.get("image", "") or "")
+    if not image_b64:
+        return jsonify({"ok": False, "error": "Aucune image reçue."}), 400
+    # Garde-fou : base64 ≈ 4/3 du binaire → 28 Mo ≈ 20 Mo d'image
+    if len(image_b64) > 28 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "Image trop volumineuse (20 Mo max)."}), 400
+
+    try:
+        image_bytes = base64.b64decode(image_b64)
+    except (binascii.Error, ValueError):
+        return jsonify({"ok": False, "error": "Image invalide."}), 400
+    if not image_bytes:
+        return jsonify({"ok": False, "error": "Image vide."}), 400
+
+    filename = str(data.get("filename", "image.jpg") or "image.jpg")[:120]
+    count = data.get("count", 5)
+    return jsonify(reverse_service.reverse_search(image_bytes, filename=filename, limit=count))
 
 
 # --------------------------------------------------------------------------- #

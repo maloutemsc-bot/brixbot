@@ -118,6 +118,7 @@ HELP_TEXT = (
     "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"
     "    ✏️ `.correct` (réponse à un message ou `.correct texte`) — corrige l'orthographe et la grammaire (IA)\n"
     "📖 `.ocr` (réponse à une photo) — lit le texte de l'image.\n"
+    "🔍 `.rev` (réponse à une photo ou légende `.rev`) — recherche d'images inversée (Yandex + liens Google Lens)\n"
     "    📌 .pin chat — envoie des images (gratuit) · .pin nsfw chat pour désactiver le filtre 🔞\n"
     "    🎵 .lyrics artiste - titre — affiche les paroles d'une chanson\n"
     "    🎧 .spo artiste - titre — télécharge la chanson (audio) et l'envoie dans le chat\n"

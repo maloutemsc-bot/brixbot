@@ -382,6 +382,7 @@ docker compose logs -f bot
 | `.tel 06 12 34 56 78` | Recherche par numéro de téléphone |
 | `.ia oui` / `.ia non` | Active/désactive l'IA pour cette conversation (propriétaire) |
 | `.ia liste` | Liste les conversations où l'IA est active |
+| `.rev` (réponse à une photo ou légende `.rev`) | Recherche d'images inversée : upload anonyme (catbox.moe) + recherche Yandex des images similaires (titre + source), puis liens Google Lens / Yandex pour creuser. Gratuit, sans clé (`requests` seul) |
 
 **Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
 réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout
