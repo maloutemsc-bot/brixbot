@@ -383,6 +383,7 @@ docker compose logs -f bot
 | `.ia oui` / `.ia non` | Active/désactive l'IA pour cette conversation (propriétaire) |
 | `.ia liste` | Liste les conversations où l'IA est active |
 | `.rev` (réponse à une photo ou légende `.rev`) | Recherche d'images inversée : upload anonyme (catbox.moe) + recherche Yandex des images similaires (titre + source), puis liens Google Lens / Yandex pour creuser. Gratuit, sans clé (`requests` seul) |
+| `.spam 1000 coucou` | Envoie le message en boucle dans la conversation (réservé au propriétaire, ou aux personnes autorisées via `.spamon` en réponse à un de leurs messages ; `.spamoff` retire l'autorisation). Maximum 1000 envois, pause anti-ban entre chaque |
 
 **Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
 réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout

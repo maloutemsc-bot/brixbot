@@ -130,6 +130,7 @@ HELP_TEXT = (
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
     "🧹 `.clear` — purge les messages récents de la conversation (admin en groupe, proprio en privé)\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
+    "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse)\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )

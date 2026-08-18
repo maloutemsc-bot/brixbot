@@ -259,6 +259,9 @@ function loadBotStore() {
   botState.afk = botState.afk || {};
   // Conversations désactivées individuellement (.conv off).
   botState.convOff = botState.convOff || {};
+  // Autorisations .spam par conversation : { [chatLocal]: { [senderLocal]: true } }
+  // (remplies par .spamon/.spamoff, voir handleSpamCommand).
+  botState.spamAllow = botState.spamAllow || {};
   // Interrupteur général : absent de l'ancien stockage → actif par défaut.
   botState.botEnabled = botState.botEnabled !== false;
 }
@@ -1148,6 +1151,17 @@ async function handleMessage(msg) {
     debugLog(`[clearmem] commande : ${trimmed}`);
     handleClearMemCommand(msg, remoteJid, sender).catch((err) => {
       debugLog(`[clearmem] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .spam (+ .spamon / .spamoff) : envoi en boucle d'un message.
+  // Réservée au propriétaire (compte lié), sauf pour les personnes autorisées
+  // dans la conversation via .spamon (voir handleSpamCommand). ---
+  if (/^\.spam(?:on|off)?\b/i.test(trimmed)) {
+    debugLog(`[spam] commande : ${trimmed}`);
+    handleSpamCommand(msg, remoteJid, sender, trimmed).catch((err) => {
+      debugLog(`[spam] erreur : ${err.message}`);
     });
     return;
   }
@@ -3745,6 +3759,146 @@ async function handleClearMemCommand(msg, remoteJid, sender) {
   await sendChunks(remoteJid, lines.join('\n'), msg);
   debugLog(`[clearmem] ${deleted} entrées effacées pour ${target}`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧠 [mémoire effacée] ${who} (${deleted})`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .spam — envoi en boucle d'un message dans la conversation         */
+/* -------------------------------------------------------------------------- */
+
+// Nombre maximum de messages envoyés par .spam (l'exemple demandé : 1000).
+const SPAM_MAX = 1000;
+// Pause entre deux envois : assez long pour ne pas se faire ban par WhatsApp.
+const SPAM_DELAY_MS = 350;
+// Longueur maximum du message répété (tronqué au-delà).
+const SPAM_MSG_MAX = 500;
+
+/**
+ * .spam <nombre> <message> — envoie le message en boucle dans la conversation.
+ *
+ * Réservé au propriétaire (compte lié, key.fromMe). Le propriétaire peut
+ * AUTORISER une personne à utiliser .spam dans une conversation en RÉPONDANT
+ * à un de ses messages avec `.spamon` (et retirer l'autorisation avec
+ * `.spamoff`) :
+ *
+ *   .spam 1000 coucou   → envoie "coucou" 1000 fois ici
+ *   .spam 5 (réponse)   → répète 5× le texte du message cité
+ *   .spamon (réponse)   → autorise l'auteur du message cité à utiliser .spam ici
+ *   .spamoff (réponse)  → retire cette autorisation
+ *   .spam               → aide
+ *
+ * L'état des autorisations est persistant (bot-store.json) et survit aux
+ * redémarrages.
+ */
+async function handleSpamCommand(msg, remoteJid, sender, body) {
+  const current = msg.message || {};
+  const ctx = current.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+
+  // --- Mode autorisation : .spamon / .spamoff (réservé au propriétaire) ---
+  if (/^\.spam(on|off)\b/i.test(body)) {
+    if (!msg.key.fromMe) {
+      // Silencieux pour les autres : seule l'autorisation compte.
+      debugLog('[spam] refusé : seuls le propriétaire peut donner/retirer une autorisation');
+      return;
+    }
+    const grant = /^\.spamon\b/i.test(body);
+    const target = ctx.participant || ctx.remoteJid || '';
+    if (!quoted || !target) {
+      return replyError(remoteJid,
+        '🔒 *Commande .spam' + (grant ? 'on' : 'off') + '*\n\n'
+        + (grant
+          ? 'Autorise une personne à utiliser `.spam` dans cette conversation.\n\n'
+          : 'Retire à une personne l\'autorisation d\'utiliser `.spam` dans cette conversation.\n\n')
+        + 'RÉPONDEZ à un message de la personne concernée avec `.'
+        + (grant ? 'spamon' : 'spamoff') + '`.', msg);
+    }
+    const chatLocal = jidLocal(remoteJid);
+    const whoLocal = jidLocal(target);
+    const allowMap = (botState.spamAllow = botState.spamAllow || {});
+    const chatMap = (allowMap[chatLocal] = allowMap[chatLocal] || {});
+    if (grant) {
+      chatMap[whoLocal] = true;
+      debugLog(`[spam] autorisation accordée à ${whoLocal} dans ${chatLocal}`);
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: `🔓 *${contactLabel(target)}* peut maintenant utiliser \`.spam\` ici.`,
+        }, { quoted: msg }).catch(() => {});
+      }
+    } else {
+      delete chatMap[whoLocal];
+      debugLog(`[spam] autorisation retirée à ${whoLocal} dans ${chatLocal}`);
+      if (sock) {
+        sock.sendMessage(remoteJid, {
+          text: `🔒 *${contactLabel(target)}* ne peut plus utiliser \`.spam\` ici.`,
+        }, { quoted: msg }).catch(() => {});
+      }
+    }
+    saveBotStore();
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔓 [spam ${grant ? 'on' : 'off'}] ${contactLabel(target)}`);
+    return;
+  }
+
+  // --- Aide ---
+  const m = /^\.spam\s+(\d+)(?:\s+([\s\S]+))?$/i.exec(body);
+  if (!m) {
+    return replyError(remoteJid,
+      '🔁 *Commande .spam*\n\n'
+      + 'Envoie un message en boucle dans cette conversation.\n\n'
+      + 'Utilisation :\n'
+      + '`.spam <nombre> <message>` — ex : `.spam 1000 coucou`\n'
+      + '`.spam <nombre>` en répondant à un message — répète le texte cité\n\n'
+      + '_Réservé au propriétaire, sauf autorisation donnée avec `.spamon`._', msg);
+  }
+
+  // --- Autorisation : propriétaire OU personne autorisée dans CE chat ---
+  const isOwner = !!msg.key.fromMe;
+  const chatLocal = jidLocal(remoteJid);
+  const senderLocal = jidLocal(sender);
+  const allowed = isOwner
+    || !!(botState.spamAllow && botState.spamAllow[chatLocal]
+      && botState.spamAllow[chatLocal][senderLocal]);
+  if (!allowed) {
+    debugLog(`[spam] refusé pour ${senderLocal} (non autorisé dans ${chatLocal})`);
+    return; // silencieux : seuls le propriétaire et les autorisés peuvent spammer
+  }
+
+  let count = parseInt(m[1], 10);
+  if (!Number.isFinite(count) || count < 1) count = 1;
+  if (count > SPAM_MAX) count = SPAM_MAX;
+  let text = (m[2] || '').trim();
+  if (!text) {
+    // Pas de message saisi → on répète le texte du message cité.
+    text = quotedTextOf(quoted);
+    if (!text) {
+      return replyError(remoteJid,
+        '❌ Message vide. Utilisation : `.spam <nombre> <message>`'
+        + ' (ou répondez à un message avec `.spam <nombre>`).', msg);
+    }
+  }
+  if (text.length > SPAM_MSG_MAX) text = text.slice(0, SPAM_MSG_MAX) + '…';
+
+  // Confirmation, puis boucle d'envoi avec une pause entre chaque message
+  // (anti-ban). La boucle est asynchrone : le bot continue de répondre ailleurs.
+  if (sock) {
+    sock.sendMessage(remoteJid, { text: `🔁 Envoi de *${count} ×* « ${text.slice(0, 80)} »…` }, { quoted: msg }).catch(() => {});
+  }
+  debugLog(`[spam] ${count} × « ${text.slice(0, 40)} » dans ${remoteJid} (par ${senderLocal})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔁 [spam] ${count} × « ${text.slice(0, 40)} » (par ${contactLabel(sender)})`);
+  let sent = 0;
+  for (let i = 0; i < count; i++) {
+    if (!sock) break;
+    try {
+      await sock.sendMessage(remoteJid, { text });
+      sent++;
+      // Souffle un peu plus toutes les 50 messages, puis pause normale.
+      await sleep((i % 50 === 49) ? SPAM_DELAY_MS * 2 : SPAM_DELAY_MS);
+    } catch (err) {
+      debugLog(`[spam] envoi ${i + 1} échoué : ${err.message}`);
+      break;
+    }
+  }
+  debugLog(`[spam] terminé : ${sent}/${count} envoyés`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✅ [spam terminé] ${sent}/${count} envoyés`);
 }
 
 /**
