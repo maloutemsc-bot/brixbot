@@ -5237,6 +5237,21 @@ server.post('/internal/restart', checkBotKey, (_req, res) => {
   }, 4000);
 });
 
+// Le backend pousse la configuration INSTANTANÉMENT quand elle change dans
+// le panneau (ex : réaction chaînes) — plus besoin d'attendre le polling
+// 30 s. Le polling reste en secours (redémarrage du bot, backend injoignable).
+server.post('/internal/config', checkBotKey, (req, res) => {
+  const body = req.body || {};
+  if ('newsletter_react_enabled' in body) {
+    botCfg.newsletterReactEnabled = !!body.newsletter_react_enabled;
+  }
+  if ('newsletter_react_emoji' in body) {
+    botCfg.newsletterReactEmoji = String(body.newsletter_react_emoji || '').trim() || '👍';
+  }
+  res.json({ ok: true, config: botCfg });
+  debugLog('[config] config poussée par le backend : ' + JSON.stringify(botCfg));
+});
+
 // Si le port est déjà occupé, une autre instance du bot tourne déjà :
 // on s'arrête immédiatement avec un message clair (deux instances en même
 // temps = erreurs "Key used already" / "Bad MAC").

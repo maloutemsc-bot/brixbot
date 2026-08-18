@@ -103,6 +103,28 @@ def require_bot_key(fn):
     return wrapper
 
 
+def _push_config_to_bot(cfg):
+    """Pousse la configuration légère au bot Node.js, INSTANTANÉMENT.
+
+    Appelée après chaque sauvegarde de configuration dans le panneau : le bot
+    met à jour sa config en mémoire sans attendre son polling (30 s).
+    Fire-and-forget : si le bot est injoignable (éteint, en redémarrage…), le
+    polling reprendra la main au prochain cycle.
+    """
+    try:
+        requests.post(
+            f"{BOT_INTERNAL_URL}/internal/config",
+            json={
+                "newsletter_react_enabled": bool(cfg.newsletter_react_enabled),
+                "newsletter_react_emoji": cfg.newsletter_react_emoji or "👍",
+            },
+            headers={"X-Bot-Key": BOT_API_KEY},
+            timeout=5,
+        )
+    except Exception:
+        pass  # bot injoignable : le polling 30 s prendra le relais
+
+
 def require_admin(fn):
     """Protège les endpoints du panneau si un mot de passe est configuré."""
 
@@ -276,6 +298,10 @@ def save_config():
         cfg.newsletter_react_emoji = (emoji or "👍")[:16]
 
     db.session.commit()
+
+    # Pousse la config au bot instantanément (pas d'attente du polling 30 s).
+    _push_config_to_bot(cfg)
+
     return jsonify({"ok": True, "config": cfg.to_dict()})
 
 
