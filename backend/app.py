@@ -269,9 +269,31 @@ def save_config():
         cfg.flexible_search = bool(data["flexible_search"])
     if "auto_response" in data:
         cfg.auto_response = bool(data["auto_response"])
+    if "newsletter_react_enabled" in data:
+        cfg.newsletter_react_enabled = bool(data["newsletter_react_enabled"])
+    if "newsletter_react_emoji" in data:
+        emoji = str(data["newsletter_react_emoji"]).strip()
+        cfg.newsletter_react_emoji = (emoji or "👍")[:16]
 
     db.session.commit()
     return jsonify({"ok": True, "config": cfg.to_dict()})
+
+
+@app.route("/api/bot/config", methods=["GET"])
+@require_bot_key
+@limiter.limit("60 per minute")
+def bot_config_for_bot():
+    """Configuration légère que le bot Node.js poll régulièrement.
+
+    Le bot n'a pas besoin de TOUTE la configuration (les clés API restent
+    dans le backend) : uniquement ce dont il a besoin côté Node pour ses
+    réactions autonomes — ici, la réaction émoji aux chaînes @newsletter.
+    """
+    cfg = BotConfig.get()
+    return jsonify({
+        "newsletter_react_enabled": bool(cfg.newsletter_react_enabled),
+        "newsletter_react_emoji": cfg.newsletter_react_emoji or "👍",
+    })
 
 
 # --------------------------------------------------------------------------- #

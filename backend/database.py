@@ -55,6 +55,11 @@ class BotConfig(db.Model):
     max_results = db.Column(db.Integer, default=10, nullable=False)
     flexible_search = db.Column(db.Boolean, default=True, nullable=False)
     auto_response = db.Column(db.Boolean, default=True, nullable=False)
+    # Réaction automatique aux messages des CHAÎNES WhatsApp (@newsletter) :
+    # quand le bot reçoit un message sur une chaîne, il réagit avec l'émoji
+    # choisi dans le panneau (réglage dans l'onglet Configuration).
+    newsletter_react_enabled = db.Column(db.Boolean, default=False, nullable=False)
+    newsletter_react_emoji = db.Column(db.String(32), default="👍", nullable=False)
 
     def to_dict(self):
         return {
@@ -64,6 +69,8 @@ class BotConfig(db.Model):
             "max_results": self.max_results,
             "flexible_search": bool(self.flexible_search),
             "auto_response": bool(self.auto_response),
+            "newsletter_react_enabled": bool(self.newsletter_react_enabled),
+            "newsletter_react_emoji": self.newsletter_react_emoji or "👍",
         }
 
     @staticmethod
@@ -282,8 +289,12 @@ def _ensure_columns(app):
                 ))
             print(f"[migration] Colonne {table}.{column_name} ajoutée")
 
-    # Nouveautés de la version avec mémoire + whitelist
+    # Réaction aux chaînes WhatsApp (@newsletter)
     for table, columns in {
+        "bot_config": [
+            ("newsletter_react_enabled", "BOOLEAN DEFAULT 0"),
+            ("newsletter_react_emoji", "VARCHAR(32) DEFAULT '👍'"),
+        ],
         "ai_config": [
             (            "memory_enabled", "BOOLEAN DEFAULT 1"),
             ("memory_exchanges", "INTEGER DEFAULT 5"),

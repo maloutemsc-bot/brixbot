@@ -248,6 +248,8 @@
       $('#cfg-auto').checked = config.auto_response;
       $('#cfg-api').value = config.api_key || '';
       $('#cfg-max').value = config.max_results;
+      $('#cfg-newsletter').checked = !!config.newsletter_react_enabled;
+      $('#cfg-newsletter-emoji').value = config.newsletter_react_emoji || '👍';
     } catch (err) { toast(err.message, 'error'); }
   }
 
@@ -261,6 +263,8 @@
           max_results: parseInt($('#cfg-max').value, 10) || 10,
           flexible_search: $('#cfg-flexible').checked,
           auto_response: $('#cfg-auto').checked,
+          newsletter_react_enabled: $('#cfg-newsletter').checked,
+          newsletter_react_emoji: $('#cfg-newsletter-emoji').value.trim() || '👍',
         }),
       });
       toast('Configuration enregistrée ✅');
@@ -843,6 +847,7 @@
   });
 
   $('#cfg-save').addEventListener('click', saveConfig);
+  $('#cfg-save-newsletter').addEventListener('click', saveConfig);
   $('#ws-refresh').addEventListener('click', loadWhatsApp);
   $('#ws-restart').addEventListener('click', restartBot);
   $('#ai-save').addEventListener('click', saveAI);

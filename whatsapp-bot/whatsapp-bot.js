@@ -270,6 +270,27 @@ function saveBotStore() {
 }
 loadBotStore();
 
+// Configuration légère récupérée du backend (poll toutes les 30 s) : utilisée
+// pour les réactions autonomes du bot — ici, la réaction émoji aux messages
+// reçus sur les chaînes WhatsApp (@newsletter), réglable depuis le panneau.
+let botCfg = { newsletterReactEnabled: false, newsletterReactEmoji: '👍' };
+async function refreshBotConfig() {
+  try {
+    const { data } = await axios.get(`${FLASK_URL}/api/bot/config`, {
+      headers: { 'X-Bot-Key': BOT_API_KEY },
+      timeout: 8000,
+    });
+    if (data && typeof data === 'object') {
+      botCfg.newsletterReactEnabled = !!data.newsletter_react_enabled;
+      botCfg.newsletterReactEmoji = String(data.newsletter_react_emoji || '').trim() || '👍';
+    }
+  } catch (_) {
+    // Backend pas joignable : on garde la dernière configuration connue.
+  }
+}
+refreshBotConfig();
+setInterval(refreshBotConfig, 30000);
+
 const logger = pino({ level: LOG_LEVEL });
 
 /* -------------------------------------------------------------------------- */
@@ -826,6 +847,19 @@ async function handleMessage(msg) {
   if (botState.convOff && botState.convOff[jidLocal(remoteJid)]) {
     debugLog(`[conv] éteinte — message ignoré (jid=${remoteJid})`);
     return;
+  }
+
+  // --- Réaction automatique aux CHAÎNES WhatsApp (@newsletter) ---
+  // Réglable depuis le panneau (onglet Configuration) : quand le bot reçoit
+  // un message sur une chaîne, il y réagit avec l'émoji choisi. C'est
+  // silencieux — aucune réponse texte n'est envoyée, seule la réaction.
+  // Respecte les interrupteurs .bot / .conv (blocs ci-dessus).
+  if (!key.fromMe && botCfg.newsletterReactEnabled && /@newsletter$/i.test(remoteJid)) {
+    const emoji = botCfg.newsletterReactEmoji;
+    if (emoji && sock && key.id) {
+      sock.sendMessage(remoteJid, { react: { text: emoji, key: msg.key } })
+        .catch((err) => debugLog(`[newsletter] réaction impossible : ${err.message}`));
+    }
   }
 
   // AFK : l'expéditeur était absent → il est de retour (statut effacé).

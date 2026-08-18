@@ -176,6 +176,35 @@
           <button class="btn primary" id="cfg-save">💾 Sauvegarder</button>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3>Réaction aux chaînes WhatsApp</h3>
+            <p>Réagit automatiquement avec un émoji aux messages reçus sur les chaînes (.newsletter).</p>
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-row switch-row">
+            <div>
+              <label for="cfg-newsletter">Réagir aux messages des chaînes</label>
+              <p class="hint">Chaque message reçu sur une chaîne reçoit l'émoji ci-dessous en réaction</p>
+            </div>
+            <label class="switch"><input type="checkbox" id="cfg-newsletter"><span class="slider"></span></label>
+          </div>
+
+          <div class="form-row">
+            <label for="cfg-newsletter-emoji">Émoji de réaction</label>
+            <input type="text" id="cfg-newsletter-emoji" maxlength="16" placeholder="👍">
+            <p class="hint">Un seul émoji (ou quelques caractères). Ex : 👍 ❤️ 🔥 😮</p>
+          </div>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn primary" id="cfg-save-newsletter">💾 Sauvegarder</button>
+        </div>
+      </div>
     </section>
 
     <!-- ==================== ONGLET : WHATSAPP ==================== -->
