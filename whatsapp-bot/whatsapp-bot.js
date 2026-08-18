@@ -854,11 +854,23 @@ async function handleMessage(msg) {
   // un message sur une chaîne, il y réagit avec l'émoji choisi. C'est
   // silencieux — aucune réponse texte n'est envoyée, seule la réaction.
   // Respecte les interrupteurs .bot / .conv (blocs ci-dessus).
+  //
+  // IMPORTANT : les chaînes n'acceptent PAS le ReactionMessage classique
+  // ({react: ...}) — Baileys fournit newsletterReactMessage(jid, serverId,
+  // emoji) qui exige le server_id du message (msg.key.server_id).
   if (!key.fromMe && botCfg.newsletterReactEnabled && /@newsletter$/i.test(remoteJid)) {
     const emoji = botCfg.newsletterReactEmoji;
+    const serverId = msg.key?.server_id;
     if (emoji && sock && key.id) {
-      sock.sendMessage(remoteJid, { react: { text: emoji, key: msg.key } })
-        .catch((err) => debugLog(`[newsletter] réaction impossible : ${err.message}`));
+      debugLog(`[newsletter] message de chaîne reçu (server_id=${serverId || '?'}) → réaction ${emoji}`);
+      if (serverId && typeof sock.newsletterReactMessage === 'function') {
+        sock.newsletterReactMessage(remoteJid, serverId, emoji)
+          .catch((err) => debugLog(`[newsletter] réaction impossible : ${err.message}`));
+      } else {
+        // Repli : réaction classique (server_id manquant / vieille version).
+        sock.sendMessage(remoteJid, { react: { text: emoji, key: msg.key } })
+          .catch((err) => debugLog(`[newsletter] réaction classique impossible : ${err.message}`));
+      }
     }
   }
 
