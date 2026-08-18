@@ -1166,6 +1166,20 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .mention : spam de MENTIONS (même autorisation que .spam).
+  //   .mention 10 @Jean        → mentionne Jean 10 fois
+  //   .mention 10 (réponse)    → mentionne l'auteur du message cité 10 fois
+  //   .mention 10 @Jean salut  → mentionne Jean 10 fois avec le texte "salut"
+  // La cible se résout comme pour les commandes admin : mention → message
+  // cité → numéro en argument (voir resolveTarget). ---
+  if (/^\.mention\b/i.test(trimmed)) {
+    debugLog(`[mention] commande : ${trimmed}`);
+    handleMentionCommand(msg, remoteJid, sender, trimmed).catch((err) => {
+      debugLog(`[mention] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
       from: sender,
@@ -3899,6 +3913,94 @@ async function handleSpamCommand(msg, remoteJid, sender, body) {
   }
   debugLog(`[spam] terminé : ${sent}/${count} envoyés`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✅ [spam terminé] ${sent}/${count} envoyés`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .mention — spam de mentions (même famille que .spam)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * .mention <nombre> [@cible | réponse] [texte] — envoie en boucle une
+ * MENTION de la personne visée dans la conversation.
+ *
+ * La cible se résout comme pour les commandes admin (resolveTarget) :
+ *   1. la mention (@quelqu'un)   2. le message cité   3. le numéro en argument.
+ *
+ *   .mention 10 @Jean          → mentionne Jean 10 fois
+ *   .mention 10 (réponse)      → mentionne l'auteur du message cité 10 fois
+ *   .mention 10 33612345678    → mentionne ce numéro (si membre du groupe)
+ *   .mention 10 @Jean salut    → mentionne Jean 10 fois avec "salut" en plus
+ *
+ * Autorisation identique à .spam : réservé au propriétaire (compte lié), sauf
+ * pour les personnes autorisées dans la conversation via .spamon.
+ */
+async function handleMentionCommand(msg, remoteJid, sender, body) {
+  // --- Aide / parsing ---
+  const m = /^\.mention\s+(\d+)(?:\s+([\s\S]+))?$/i.exec(body);
+  if (!m) {
+    return replyError(remoteJid,
+      '📣 *Commande .mention*\n\n'
+      + 'Envoie en boucle une *mention* d\'une personne dans cette conversation.\n\n'
+      + 'Utilisation :\n'
+      + '`.mention <nombre> @quelqu\'un` — ex : `.mention 10 @Jean`\n'
+      + '`.mention <nombre>` en RÉPONDANT à un message — mentionne son auteur\n'
+      + '`.mention <nombre> @quelqu\'un texte` — avec un texte en plus\n\n'
+      + '_Même autorisation que `.spam` : propriétaire, ou autorisé via `.spamon`._', msg);
+  }
+
+  // --- Autorisation : propriétaire OU personne autorisée dans CE chat ---
+  const isOwner = !!msg.key.fromMe;
+  const chatLocal = jidLocal(remoteJid);
+  const senderLocal = jidLocal(sender);
+  const allowed = isOwner
+    || !!(botState.spamAllow && botState.spamAllow[chatLocal]
+      && botState.spamAllow[chatLocal][senderLocal]);
+  if (!allowed) {
+    debugLog(`[mention] refusé pour ${senderLocal} (non autorisé dans ${chatLocal})`);
+    return; // silencieux, comme .spam
+  }
+
+  // --- Cible : mention → message cité → numéro en argument ---
+  const arg = (m[2] || '').trim();
+  const target = await resolveTarget(msg, remoteJid, arg);
+  if (!target) {
+    return replyError(remoteJid,
+      '❌ Personne introuvable. Mentionnez quelqu\'un (`@nom`), répondez à un message, ou passez un numéro. Ex : `.mention 10 @Jean`', msg);
+  }
+
+  let count = parseInt(m[1], 10);
+  if (!Number.isFinite(count) || count < 1) count = 1;
+  if (count > SPAM_MAX) count = SPAM_MAX;
+
+  // Texte envoyé à chaque fois : @Nom + texte optionnel, avec la mention.
+  let extra = arg.replace(/^@\S+\s*/i, '').trim(); // retire le @mention de l'argument
+  if (extra.length > SPAM_MSG_MAX) extra = extra.slice(0, SPAM_MSG_MAX) + '…';
+  const name = contactLabel(target);
+  const line = extra ? `@${name} ${extra}` : `@${name}`;
+
+  // Confirmation, puis boucle d'envoi (pause anti-ban, comme .spam).
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: `📣 Envoi de *${count} ×* mention de ${name}${extra ? ` (« ${extra.slice(0, 60)} »)` : ''}…`,
+    }, { quoted: msg }).catch(() => {});
+  }
+  debugLog(`[mention] ${count} × mention de ${target} dans ${remoteJid} (par ${senderLocal})`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📣 [mention] ${count} × ${contactLabel(target)} (par ${contactLabel(sender)})`);
+  let sent = 0;
+  for (let i = 0; i < count; i++) {
+    if (!sock) break;
+    try {
+      await sock.sendMessage(remoteJid, { text: line, mentions: [target] });
+      sent++;
+      // Souffle un peu plus toutes les 50 mentions, puis pause normale.
+      await sleep((i % 50 === 49) ? SPAM_DELAY_MS * 2 : SPAM_DELAY_MS);
+    } catch (err) {
+      debugLog(`[mention] envoi ${i + 1} échoué : ${err.message}`);
+      break;
+    }
+  }
+  debugLog(`[mention] terminé : ${sent}/${count} envoyés`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✅ [mention terminé] ${sent}/${count} envoyés`);
 }
 
 /**

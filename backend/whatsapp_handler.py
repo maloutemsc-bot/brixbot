@@ -131,6 +131,7 @@ HELP_TEXT = (
     "🧹 `.clear` — purge les messages récents de la conversation (admin en groupe, proprio en privé)\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
     "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse)\n"
+    "    📣 `.mention 10 @Jean` (ou réponse à un message) — spam de mentions (même autorisation que `.spam`)\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
 )
