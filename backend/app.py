@@ -322,6 +322,54 @@ def bot_config_for_bot():
     })
 
 
+@app.route("/api/bot/history", methods=["POST"])
+@require_bot_key
+@limiter.limit("120 per minute")
+def bot_history():
+    """Derniers messages d'un expéditeur dans une conversation (commande .history).
+
+    Le bot Node.js envoie {jid, sender, limit} : on interroge le journal des
+    conversations (mêmes données que l'onglet Chats du panneau) et on renvoie
+    les `limit` derniers messages de cet expéditeur dans cette conversation, du
+    plus ancien au plus récent. La correspondance expéditeur se fait sur la
+    partie locale du jid (insensible aux suffixes d'appareil :33, :s…).
+    """
+    data = request.get_json(silent=True) or {}
+    jid = str(data.get("jid", "") or "").strip()
+    sender = str(data.get("sender", "") or "").strip()
+    try:
+        limit = max(1, min(int(data.get("limit", 10)), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    if not jid or not sender:
+        return jsonify({"ok": False, "error": "Paramètres jid et sender requis."}), 400
+    if len(jid) > 200 or len(sender) > 200:
+        return jsonify({"ok": False, "error": "Paramètres invalides."}), 400
+
+    def _local(j):
+        return str(j or "").split("@")[0].split(":")[0]
+
+    jid_local = _local(jid)
+    sender_local = _local(sender)
+    entries, _approx = _chat_entries()
+    mine = sorted(
+        (
+            e
+            for e in entries
+            if not e.get("fromMe")
+            and _local(e.get("jid")) == jid_local
+            and _local(e.get("sender")) == sender_local
+        ),
+        key=lambda e: (e.get("ts") or "", e.get("sender") or ""),
+    )
+    last = mine[-limit:]
+    return jsonify({
+        "ok": True,
+        "messages": [{"ts": e.get("ts") or "", "content": e.get("content") or ""} for e in last],
+        "total": len(last),
+    })
+
+
 # --------------------------------------------------------------------------- #
 #  Configuration IA (GROQ)
 # --------------------------------------------------------------------------- #
