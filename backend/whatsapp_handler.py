@@ -128,7 +128,7 @@ HELP_TEXT = (
     "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall [msg]` · `.hidetag [msg]` · `.link` · `.close` · `.open` · `.revoke`\n"
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
-    "🧹 `.clear` — purge les messages récents de la conversation (admin en groupe, proprio en privé)\n"
+    "🧹 `.clear` — purge les messages de la conversation · 👢 `.kickall oui` — expulse tous les membres du groupe (tous deux réservés au propriétaire)\n"
     "📜 `.history 10` (réponse à un message ou @mention) — les 10 derniers messages de la personne dans ce chat\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
     "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse)\n"

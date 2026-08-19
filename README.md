@@ -386,6 +386,8 @@ docker compose logs -f bot
 | `.spam 1000 coucou` | Envoie le message en boucle dans la conversation (réservé au propriétaire, ou aux personnes autorisées via `.spamon` en réponse à un de leurs messages ; `.spamoff` retire l'autorisation). Maximum 1000 envois, pause anti-ban entre chaque |
 | `.mention 10 @Jean` | Spam de mentions : mentionne la personne en boucle (cible par `@mention`, message cité ou numéro ; texte optionnel après). Même autorisation que `.spam` |
 | `.history 10` (réponse à un message, @mention ou numéro) | Les 10 derniers messages de la personne dans cette conversation, lus depuis le journal du backend (les mêmes données que l'onglet Chats du panneau — couvre tous les messages, même avant un redémarrage) |
+| `.clear oui` | Purge les messages de la conversation pour tout le monde (**réservé au propriétaire**) |
+| `.kickall oui` | Expulse tous les membres d'un groupe sauf les admins, le créateur et le bot (**réservé au propriétaire**, confirmation requise, lots espacés anti-rate-limit) |
 
 **Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
 réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout

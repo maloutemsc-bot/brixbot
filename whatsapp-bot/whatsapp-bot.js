@@ -1183,6 +1183,15 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .kickall : expulsion de tous les membres (réservée au propriétaire) ---
+  if (/^\.kickall\b/i.test(trimmed)) {
+    debugLog(`[kickall] commande : ${trimmed}`);
+    handleKickAllCommand(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[kickall] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // --- Commande .clear : purge des messages de la conversation ---
   if (/^\.clear\b/i.test(trimmed)) {
     debugLog(`[clear] commande : ${trimmed}`);
@@ -3110,6 +3119,78 @@ async function handleKick(msg, remoteJid, body) {
   }
 }
 
+/**
+ * .kickall — expulse TOUS les membres d'un groupe, sauf les administrateurs,
+ * le créateur et le bot lui-même. Réservé au propriétaire (compte lié).
+ * Deux temps : `.kickall` affiche le nombre, `.kickall oui` confirme.
+ */
+async function handleKickAllCommand(msg, remoteJid, body) {
+  // Réservé au propriétaire : le compte lié au bot (fromMe). Refus silencieux sinon.
+  if (!msg.key.fromMe) return;
+  if (!sock) return replyError(remoteJid, '❌ Bot non connecté.', msg);
+
+  let meta;
+  try {
+    meta = await sock.groupMetadata(remoteJid);
+  } catch (_) {
+    return replyError(remoteJid, '⚠️ Cette commande ne fonctionne que dans un groupe.', msg);
+  }
+
+  // Le bot doit être administrateur du groupe pour pouvoir expulser
+  const botRole = getParticipantRole(meta, sock.user?.id);
+  if (botRole !== 'admin' && botRole !== 'superadmin') {
+    return replyError(remoteJid, '🔒 Le bot doit être administrateur du groupe pour expulser des membres.', msg);
+  }
+
+  const botLocal = jidLocal(sock.user?.id);
+  const ownerLocal = jidLocal(meta.owner);
+  const targets = (meta.participants || []).filter((p) => {
+    const role = getParticipantRole(meta, p.id);
+    if (role === 'admin' || role === 'superadmin') return false; // jamais les admins
+    const local = jidLocal(p.id);
+    if (local === botLocal) return false;                 // jamais le bot (donc le proprio lié)
+    if (ownerLocal && local === ownerLocal) return false; // jamais le créateur du groupe
+    return true;
+  }).map((p) => p.id);
+
+  if (!targets.length) {
+    return replyError(remoteJid, '👢 Aucun membre à expulser (tout le monde est admin).', msg);
+  }
+
+  if (!/^\s*(oui|yes|confirmer|y)\s*$/i.test(body.replace(/^\.kickall\s*/i, ''))) {
+    return replyError(remoteJid,
+      `👢 *Confirmation requise*\n\n`
+      + `${targets.length} membre(s) seront expulsés du groupe.\n`
+      + 'Tapez .kickall oui pour confirmer.', msg);
+  }
+
+  if (sock) sock.sendMessage(remoteJid, { text: `👢 Expulsion de ${targets.length} membre(s)…` }).catch(() => {});
+
+  // Expulsion par lots espacés (anti-rate-limit)
+  const KICKALL_BATCH = 5;
+  let kicked = 0;
+  const errors = [];
+  for (let i = 0; i < targets.length; i += KICKALL_BATCH) {
+    const chunk = targets.slice(i, i + KICKALL_BATCH);
+    await Promise.all(chunk.map(async (jid) => {
+      try {
+        await sock.groupParticipantsUpdate(remoteJid, [jid], 'remove');
+        kicked += 1;
+      } catch (err) {
+        errors.push(contactLabel(jid));
+      }
+    }));
+    if (i + KICKALL_BATCH < targets.length) await sleep(400); // espacement anti-rate-limit
+  }
+
+  const failed = errors.length ? `\n⚠️ Impossible : ${errors.slice(0, 5).join(', ')}${errors.length > 5 ? '…' : ''}` : '';
+  await sock.sendMessage(remoteJid, {
+    text: `✅ ${kicked}/${targets.length} membre(s) expulsé(s).` + failed,
+  });
+  debugLog(`[admin] kickall : ${kicked}/${targets.length}`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👢 [kickall] ${kicked}/${targets.length} expulsés`);
+}
+
 /** .mute / .unmute — silence un membre (ses messages sont supprimés). */
 async function handleMuteToggle(msg, remoteJid, body, on) {
   const cmdName = on ? 'mute' : 'unmute';
@@ -3686,14 +3767,10 @@ function toMessageTs(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-async function handleClearCommand(msg, remoteJid, sender, isGroup, body) {
-  // Autorisations
-  if (isGroup) {
-    if (!(await isGroupAdmin(remoteJid, sender))) {
-      return replyError(remoteJid, '🔒 Cette commande est réservée aux administrateurs du groupe.', msg);
-    }
-  } else if (!msg.key.fromMe) {
-    return replyError(remoteJid, "🔒 Cette commande n'est utilisable que par le propriétaire en message privé.", msg);
+async function handleClearCommand(msg, remoteJid, _sender, _isGroup, body) {
+  // Autorisation : réservé au propriétaire (compte lié au bot)
+  if (!msg.key.fromMe) {
+    return replyError(remoteJid, '🔒 Cette commande n\'est utilisable que par le propriétaire.', msg);
   }
 
   if (sock) sock.sendMessage(remoteJid, { text: "🧹 Chargement de l'historique…" }).catch(() => {});
