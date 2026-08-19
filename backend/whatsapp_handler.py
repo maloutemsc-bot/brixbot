@@ -129,6 +129,7 @@ HELP_TEXT = (
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
     "🧹 `.clear` — purge les messages récents de la conversation (admin en groupe, proprio en privé)\n"
+    "📜 `.history 10` (réponse à un message ou @mention) — les 10 derniers messages de la personne dans ce chat\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
     "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse)\n"
     "    📣 `.mention 10 @Jean` (ou réponse à un message) — spam de mentions (même autorisation que `.spam`)\n"

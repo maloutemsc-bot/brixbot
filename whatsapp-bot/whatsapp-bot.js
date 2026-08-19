@@ -653,6 +653,33 @@ const MEDIA_LABELS = {
   reactionMessage: '👍 [réaction]',
 };
 
+/* -------------------------------------------------------------------------- */
+/*  Mémoire des messages (commande .history)                                   */
+/* -------------------------------------------------------------------------- */
+
+// Historique EN MÉMOIRE des messages reçus/envoyés, par conversation :
+//   jidLocal(remoteJid) → [ { sender, body, ts, fromMe }, … ]
+// Alimenté à la réception de CHAQUE message (avant tout traitement) et borné à
+// HISTORY_CHAT_CAP entrées par chat pour ne jamais grossir indéfiniment. La
+// commande .history N y puise les N derniers messages d'une personne précise.
+const HISTORY_CHAT_CAP = 500;
+const msgHistory = new Map();
+
+/**
+ * Enregistre un message dans la mémoire .history (tampon circulaire).
+ */
+function rememberMessage(remoteJid, sender, body, fromMe, msg) {
+  if (!remoteJid || remoteJid === 'status@broadcast') return;
+  const chatLocal = jidLocal(remoteJid);
+  const rawType = Object.keys((msg && msg.message) || {})[0] || '';
+  let content = (body || '').trim();
+  if (!content) content = MEDIA_LABELS[rawType] || '[message sans texte]';
+  const list = msgHistory.get(chatLocal) || [];
+  list.push({ sender, body: content, ts: Date.now(), fromMe: !!fromMe });
+  if (list.length > HISTORY_CHAT_CAP) list.splice(0, list.length - HISTORY_CHAT_CAP);
+  msgHistory.set(chatLocal, list);
+}
+
 /**
  * Journalise un message échangé dans le transcript.
  *
@@ -722,6 +749,10 @@ async function handleMessage(msg) {
   // envoyé), même ceux que le backend décidera d'ignorer. L'écriture est
   // lancée sans attendre (fire-and-forget) pour ne pas ralentir le bot.
   transcriptMessage(msg, key, body).catch(() => {});
+
+  // Mémoire .history : chaque message (reçu ou envoyé) est mémorisé avant
+  // tout traitement, même quand le bot est éteint ou la conversation coupée.
+  rememberMessage(remoteJid, sender, body, key.fromMe, msg);
 
   // Les statuts WhatsApp sont ignorés
   if (key.remoteJid === 'status@broadcast') return;
@@ -1222,6 +1253,18 @@ async function handleMessage(msg) {
     debugLog(`[mention] commande : ${trimmed}`);
     handleMentionCommand(msg, remoteJid, sender, trimmed).catch((err) => {
       debugLog(`[mention] erreur : ${err.message}`);
+    });
+    return;
+  }
+
+  // --- Commande .history N : les N derniers messages de la personne citée /
+  // mentionnée, dans CETTE conversation. La cible se résout comme les
+  // commandes admin : mention → message cité → numéro en argument. En privé,
+  // sans cible, c'est l'interlocuteur du DM. ---
+  if (/^\.history\b/i.test(trimmed)) {
+    debugLog(`[history] commande : ${trimmed}`);
+    handleHistoryCommand(msg, remoteJid, sender, trimmed).catch((err) => {
+      debugLog(`[history] erreur : ${err.message}`);
     });
     return;
   }
@@ -3819,6 +3862,71 @@ async function handleClearMemCommand(msg, remoteJid, sender) {
   await sendChunks(remoteJid, lines.join('\n'), msg);
   debugLog(`[clearmem] ${deleted} entrées effacées pour ${target}`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🧠 [mémoire effacée] ${who} (${deleted})`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commande .history — les derniers messages d'une personne dans le chat      */
+/* -------------------------------------------------------------------------- */
+
+// Nombre maximum de messages demandés (borné pour ne pas noyer le chat).
+const HISTORY_MAX = 50;
+
+/**
+ * .history N — les N derniers messages d'une personne dans CETTE conversation.
+ *
+ *   .history 10 (réponse)   → les 10 derniers messages de l'auteur du message cité
+ *   .history 10 @Jean       → les 10 derniers messages de Jean
+ *   .history 10 33612345678 → les 10 derniers messages de ce numéro
+ *   .history 10             → en privé : les 10 derniers messages de l'interlocuteur
+ *
+ * La cible se résout comme les commandes admin : mention → message cité →
+ * numéro. L'historique est la mémoire EN MÉMOIRE du bot : il couvre les
+ * messages reçus depuis le démarrage (borné à HISTORY_CHAT_CAP par chat).
+ */
+async function handleHistoryCommand(msg, remoteJid, sender, body) {
+  // --- Nombre demandé (défaut 10, borné 1..HISTORY_MAX) ---
+  const m = /^\.history\s+(\d+)/i.exec(body);
+  const count = m ? Math.min(Math.max(parseInt(m[1], 10), 1), HISTORY_MAX) : 10;
+
+  // --- Cible : mention → message cité → numéro. En privé, l'interlocuteur. ---
+  const arg = body.replace(/^\.history\s*\d*\s*/i, '').trim();
+  let target = await resolveTarget(msg, remoteJid, arg);
+  if (!target && !remoteJid.endsWith('@g.us')) target = remoteJid; // DM
+  if (!target) {
+    return replyError(remoteJid,
+      '📜 *Commande .history*\n'
+      + 'Retourne les derniers messages d\'une personne dans cette conversation.\n\n'
+      + 'Utilisation :\n'
+      + '`.history <nombre>` en RÉPONDANT à un message — les messages de son auteur\n'
+      + '`.history 10 @Jean` — les 10 derniers messages de Jean\n'
+      + '`.history 10 33612345678` — les 10 derniers messages de ce numéro\n\n'
+      + '_Historique limité aux messages échangés depuis le démarrage du bot._', msg);
+  }
+
+  const targetLocal = jidLocal(target);
+  const list = (msgHistory.get(jidLocal(remoteJid)) || [])
+    .filter((e) => jidLocal(e.sender) === targetLocal);
+
+  if (!list.length) {
+    return replyError(remoteJid,
+      `📜 Aucun message de *${contactLabel(target)}* dans cette conversation depuis le démarrage du bot.`, msg);
+  }
+
+  const last = list.slice(-count);
+  const who = contactLabel(target);
+  const lines = [
+    `📜 *${who}* — ${last.length} dernier(s) message(s) dans cette conversation`,
+    '━━━━━━━━━━━━━━',
+    ...last.map((e) => {
+      const d = new Date(e.ts);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      return `[${hh}:${mm}] ${e.body}`;
+    }),
+  ];
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  debugLog(`[history] ${last.length} message(s) de ${targetLocal} dans ${remoteJid}`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📜 [historique] ${who} (${last.length})`);
 }
 
 /* -------------------------------------------------------------------------- */

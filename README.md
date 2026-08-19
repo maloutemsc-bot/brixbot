@@ -385,6 +385,7 @@ docker compose logs -f bot
 | `.rev` (réponse à une photo ou légende `.rev`) | Recherche d'images inversée : upload anonyme (catbox.moe) + recherche Yandex des images similaires (titre + source), puis liens Google Lens / Yandex pour creuser. Gratuit, sans clé (`requests` seul) |
 | `.spam 1000 coucou` | Envoie le message en boucle dans la conversation (réservé au propriétaire, ou aux personnes autorisées via `.spamon` en réponse à un de leurs messages ; `.spamoff` retire l'autorisation). Maximum 1000 envois, pause anti-ban entre chaque |
 | `.mention 10 @Jean` | Spam de mentions : mentionne la personne en boucle (cible par `@mention`, message cité ou numéro ; texte optionnel après). Même autorisation que `.spam` |
+| `.history 10` (réponse à un message, @mention ou numéro) | Les 10 derniers messages de la personne dans cette conversation (historique en mémoire du bot, borné à 500 messages par chat) |
 
 **Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
 réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout
