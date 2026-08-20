@@ -9,6 +9,7 @@ Priorité des messages :
   3b. .meteo / .traduis / .devise → outils gratuits (sans clé)
   3c. .crypto / .8ball / .blague / .horoscope → commandes surprises
   3d. .ask [question] → question à l'IA (tout le monde, clé GROQ requise)
+  3d2. .explain [concept] → explication simple par l'IA (tout le monde)
   4. .ia (propriétaire) → gestion whitelist + liste noire
   5. IA automatique (si activée ET conversation autorisée) → GROQ
      (la liste noire est PRIORITAIRE : un chat banni est toujours muet)
@@ -78,6 +79,26 @@ USAGE_ASK = (
     "Accessible à tout le monde."
 )
 
+# Message d'aide affiché pour une commande .explain sans terme
+USAGE_EXPLAIN = (
+    "🧑‍🏫 *Commande .explain*\n"
+    "Fait expliquer un concept ou un terme simplement, par l'IA.\n\n"
+    "Utilisation : `.explain [concept]`\n"
+    "Exemple : `.explain c'est quoi un algorithme ?`\n\n"
+    "Accessible à tout le monde."
+)
+
+# Prompt système dédié à la commande .explain : expliquer SIMPLEMENT.
+# L'IA explique le terme comme à un débutant, avec une analogie quand c'est
+# possible, et répond dans la langue de la question.
+EXPLAIN_PROMPT = (
+    "Tu es un professeur pédagogue. Explique le concept demandé de manière "
+    "simple et claire, comme à quelqu'un qui n'y connaît rien. Réponds dans la "
+    "langue de la question. Structure : 1) une explication simple en 2-3 phrases, "
+    "2) une analogie de la vie courante, 3) un exemple concret. Reste concis "
+    "(max ~200 mots) et utilise des émojis avec parcimonie."
+)
+
 # Message par défaut (réponse automatique sans IA)
 DEFAULT_RESPONSE = (
     "👋 Bonjour ! Je suis un assistant de recherche.\n"
@@ -113,6 +134,7 @@ HELP_TEXT = (
     "📦 `.json` (réponse à un message) — affiche le message en JSON brut.\n"
     "📝 `.resume` (réponse à un message) — résume le message avec l'IA.\n"
     "❓ `.ask question` — pose une question à l'IA, tout le monde peut l'utiliser.\n"
+    "🧑‍🏫 `.explain concept` — l'IA t'explique simplement un concept (tout le monde).\n"
     "🆔 `.id` — affiche les identifiants de la conversation.\n"
     "🗣 `.tts texte` — transforme un texte en note vocale.\n"
     "    🌐 `.translate en texte` — traduire vers la langue de ton choix (ou réponse à un message)\n"
@@ -128,6 +150,8 @@ HELP_TEXT = (
     "👑 *Groupe (admins)* : `.kick` · `.mute` · `.unmute` · `.promote` · `.demote` · `.tagall [msg]` · `.hidetag [msg]` · `.link` · `.close` · `.open` · `.revoke`\n"
     "⚠️ *Modération (admins)* : `.warn` · `.unwarn` · `.warns` · `.resetwarn` · `.welcome` · `.antilink`\n"
     "🎲 `.roll` (`.roll 2d6`) · 💻 `.bin texte` · 📌 `.quote` (réponse) · 🏓 `.ping` · 💤 `.afk [raison]`\n"
+    "    😄 `.joke` — blague · 💡 `.fact` — fait insolite · 😂 `.meme` — mème aléatoire · 📖 `.wiki sujet` — résumé Wikipedia · 📰 `.news` — actu du jour · 🔗 `.short url` — lien raccourci · 🔳 `.qr texte` — QR code\n"
+    "    👤 `.avatar` (@mention/réponse) — photo de profil · 🔗 `.wame [numéro]` — lien wa.me · 📊 `.rank [N]` — top des plus actifs (groupe) · 📊 `.poll question | opt1 | opt2…` — vrai sondage WhatsApp\n"
     "🧹 `.clear` — purge les messages de la conversation · 👢 `.kickall oui` — expulse tous les membres du groupe (tous deux réservés au propriétaire)\n"
     "📜 `.history 10` (réponse à un message ou @mention) — les 10 derniers messages de la personne dans ce chat\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
@@ -399,6 +423,8 @@ def handle_message(body, sender="", remote_jid="", is_group=False, voice=False):
     #     allumé). Réutilise le moteur IA complet (mémoire + logs).
     if re.match(r"^\.ask(?:\s|$)", body, re.IGNORECASE):
         return _handle_ask(body, remote_jid, sender, is_group, start)
+    if re.match(r"^\.explain(?:\s|$)", body, re.IGNORECASE):
+        return _handle_explain(body, remote_jid, sender, is_group, start)
 
     # 4) Commande de contrôle .ia (réservée au propriétaire)
     if re.match(r"^\.ia(?:\s|$)", body, re.IGNORECASE):
@@ -689,6 +715,35 @@ def _handle_ask(body, remote_jid="", sender="", is_group=False, start=None):
     # Réponse complète via le moteur IA (mémoire + journalisation incluses)
     return _handle_ai(question, sender, remote_jid, is_group,
                       log_cmd=".ask", system_prompt=ask_prompt)
+
+
+# --------------------------------------------------------------------------- #
+#  Commande .explain (explication simple d'un concept — tout le monde)
+# --------------------------------------------------------------------------- #
+def _handle_explain(body, remote_jid="", sender="", is_group=False, start=None):
+    """
+    Fait expliquer un concept simplement par l'IA (commande .explain).
+
+    Accessible à tout le monde, comme .ask : commande explicite qui réutilise
+    le moteur IA complet avec un prompt système pédagogique dédié.
+    """
+    start = start if start is not None else time.perf_counter()
+    term = re.sub(r"^\.explain\s*", "", body, flags=re.IGNORECASE).strip()
+
+    if not term:
+        _log_command(".explain", "", 0, "success", "Aide affichée",
+                     time.perf_counter() - start, chat=remote_jid, sender=sender)
+        return {"reply": USAGE_EXPLAIN}
+    if len(term) > 4000:
+        _log_command(".explain", term[:500], 0, "error", "Terme trop long",
+                     time.perf_counter() - start, is_ai=True,
+                     chat=remote_jid, sender=sender)
+        return {"reply": "❌ Terme trop long (4000 caractères maximum)."}
+
+    # Réponse complète via le moteur IA (mémoire + journalisation incluses),
+    # avec le prompt pédagogique dédié à .explain.
+    return _handle_ai(term, sender, remote_jid, is_group,
+                      log_cmd=".explain", system_prompt=EXPLAIN_PROMPT)
 
 
 # --------------------------------------------------------------------------- #

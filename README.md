@@ -389,6 +389,18 @@ docker compose logs -f bot
 | `.history 10` (réponse à un message, @mention ou numéro) | Les 10 derniers messages de la personne dans cette conversation, lus depuis le journal du backend (les mêmes données que l'onglet Chats du panneau — couvre tous les messages, même avant un redémarrage) |
 | `.clear oui` | Purge les messages de la conversation pour tout le monde (**réservé au propriétaire**) |
 | `.kickall oui` | Expulse tous les membres d'un groupe sauf les admins, le créateur et le bot (**réservé au propriétaire**, confirmation requise, lots espacés anti-rate-limit) |
+| `.joke` | Blague aléatoire en français (JokeAPI, gratuit, sans clé) |
+| `.fact` | Fait insolite aléatoire (Useless Facts, gratuit, sans clé) |
+| `.meme` | Mème aléatoire populaire en image (Meme-API, gratuit, sans clé) |
+| `.wiki sujet` | Résumé Wikipedia du sujet (API publique gratuite, sans clé) |
+| `.news` | Top 5 actualités du moment (flux RSS Google News France, sans clé) |
+| `.short url` | Raccourcit un lien (is.gd, gratuit, sans clé) |
+| `.qr texte` | Génère un QR code scannable en image (librairie `qrcode`, déjà incluse) |
+| `.avatar` (@mention, réponse ou numéro) | Récupère la photo de profil de la personne (sans cible : toi ou l'interlocuteur) |
+| `.wame [numéro]` | Génère un lien `wa.me` (sans numéro : lien vers TON numéro pour inviter) |
+| `.rank [N]` | Top des membres les plus actifs du groupe depuis le démarrage du bot (défaut 10, max 20) |
+| `.poll question \| opt1 \| opt2…` | Crée un vrai sondage WhatsApp (votes natifs, max 12 options) |
+| `.explain concept` | L'IA t'explique simplement un concept (tout le monde, clé GROQ requise) |
 
 **Mémoire IA :** l'IA garde le contexte de chaque utilisateur (nombre d'échanges
 réglable dans le panneau, onglet IA). **Whitelist IA :** vide = l'IA répond à tout

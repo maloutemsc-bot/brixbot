@@ -588,6 +588,21 @@ async function startBot() {
           if (chatKeys[mkey.remoteJid].length < CLEAR_MAX) chatKeys[mkey.remoteJid].push(mkey);
         }
       }
+      // Comptage pour la commande .rank : messages REÇUS de membres du groupe
+      // (jamais les messages du bot lui-même ni les statuts).
+      if (type === 'notify') {
+        for (const msg of messages) {
+          const mkey = msg.key || {};
+          if (mkey.fromMe || !mkey.remoteJid || mkey.remoteJid === 'status@broadcast') continue;
+          const chat = mkey.remoteJid;
+          // En groupe le participant est dans key.participant ; en privé c'est
+          // le jid du chat lui-même.
+          const local = jidLocal(mkey.participant || mkey.remoteJid);
+          if (!local) continue;
+          if (!rankCounts[chat]) rankCounts[chat] = {};
+          rankCounts[chat][local] = (rankCounts[chat][local] || 0) + 1;
+        }
+      }
       if (type !== 'notify') return;
       for (const msg of messages) {
         handleMessage(msg).catch((err) => {
@@ -1149,8 +1164,10 @@ async function handleMessage(msg) {
     return;
   }
 
-  // --- Commandes utilitaires et fun (.roll / .bin / .quote / .ping / .afk) ---
-  if (/^\.(roll|bin|quote|ping|afk)\b/i.test(trimmed)) {
+  // --- Commandes utilitaires et fun (.roll / .bin / .quote / .ping / .afk /
+  // .joke / .fact / .meme / .wiki / .news / .short / .qr / .avatar / .wame /
+  // .rank / .poll) ---
+  if (/^\.(roll|bin|quote|ping|afk|joke|fact|meme|wiki|news|short|qr|avatar|wame|rank|poll)\b/i.test(trimmed)) {
     debugLog(`[fun] commande : ${trimmed}`);
     handleFunCommand(msg, remoteJid, sender, trimmed).catch((err) => {
       debugLog(`[fun] erreur : ${err.message}`);
@@ -3678,6 +3695,9 @@ const chatKeys = {}; // { [remoteJid]: [WAMessageKey] } — messages vus depuis 
 // par le téléphone à la connexion (messaging-history.set). Rempli EN CONTINU.
 const historyChatKeys = {};
 const CLEAR_MAX = 1000; // nombre max de messages chargés/supprimés en une commande
+// Compteur de messages par membre et par conversation pour la commande .rank :
+// { [remoteJid]: { [jidLocal]: nombre } } — depuis le démarrage du bot.
+const rankCounts = {};
 // Historique à la demande (History Sync On Demand) : le téléphone renvoie les
 // vieux messages par lots, ce qui permet de supprimer bien plus que la session.
 const CLEAR_HISTORY_BATCH = 100; // messages demandés à chaque requête
@@ -4357,7 +4377,430 @@ async function handleFunCommand(msg, remoteJid, sender, body) {
     case '.quote': return handleQuote(msg, remoteJid, sender);
     case '.ping': return handlePing(msg, remoteJid);
     case '.afk': return handleAfk(msg, remoteJid, sender, body);
+    case '.joke': return handleJoke(msg, remoteJid);
+    case '.fact': return handleFact(msg, remoteJid);
+    case '.meme': return handleMeme(msg, remoteJid);
+    case '.wiki': return handleWiki(msg, remoteJid, body);
+    case '.news': return handleNews(msg, remoteJid);
+    case '.short': return handleShort(msg, remoteJid, body);
+    case '.qr': return handleQr(msg, remoteJid, body);
+    case '.avatar': return handleAvatar(msg, remoteJid, sender, body);
+    case '.wame': return handleWame(msg, remoteJid, body);
+    case '.rank': return handleRank(msg, remoteJid, sender, body);
+    case '.poll': return handlePoll(msg, remoteJid, body);
     default: return replyError(remoteJid, 'ℹ️ Commande inconnue.', msg);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Commandes web & fun (.joke / .fact / .meme / .wiki / .news / .short /     */
+/*  .qr / .avatar / .wame / .rank / .poll)                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * .joke — blague aléatoire (API JokeAPI, gratuite, sans clé).
+ */
+async function handleJoke(msg, remoteJid) {
+  try {
+    const { data } = await axios.get('https://v2.jokeapi.dev/joke/Any?lang=fr&blacklistFlags=nsfw,racist,sexist,explicit', {
+      timeout: 15000,
+    });
+    let text = '';
+    if (data?.type === 'twopart') {
+      text = `😄 *Blague*\n\n${data.setup}\n\n${data.delivery}`;
+    } else if (data?.joke) {
+      text = `😄 *Blague*\n\n${data.joke}`;
+    }
+    if (!text) {
+      return replyError(remoteJid, '😅 Aucune blague trouvée. Réessayez !', msg);
+    }
+    await sock.sendMessage(remoteJid, { text }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 😄 [blague] envoyée`);
+  } catch (err) {
+    debugLog(`[joke] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer une blague. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .fact — petit fait insolite (API Useless Facts, gratuite, sans clé).
+ */
+async function handleFact(msg, remoteJid) {
+  try {
+    const { data } = await axios.get('https://uselessfacts.jsph.pl/api/v2/facts/random?language=fr', {
+      timeout: 15000,
+    });
+    const fact = String(data?.text || '').trim();
+    if (!fact) {
+      return replyError(remoteJid, '😅 Aucun fait trouvé. Réessayez !', msg);
+    }
+    await sock.sendMessage(remoteJid, { text: `💡 *Le savais-tu ?*\n\n${fact}` }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 💡 [fait] envoyé`);
+  } catch (err) {
+    debugLog(`[fact] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer un fait. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .meme — mème aléatoire populaire (API Meme-API, gratuite, sans clé).
+ * Le mème est téléchargé puis envoyé en image avec sa légende.
+ */
+async function handleMeme(msg, remoteJid) {
+  let url = '';
+  let title = '';
+  try {
+    const { data } = await axios.get('https://meme-api.com/gimme', { timeout: 15000 });
+    url = String(data?.url || '');
+    title = String(data?.title || '');
+  } catch (err) {
+    debugLog(`[meme] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer un mème. Réessayez plus tard.', msg);
+  }
+  if (!url) {
+    return replyError(remoteJid, '😅 Aucun mème trouvé. Réessayez !', msg);
+  }
+  try {
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      maxContentLength: 15 * 1024 * 1024,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const ctype = String(res.headers['content-type'] || '');
+    if (!res.data || !res.data.length || ctype.indexOf('image/') !== 0) {
+      return replyError(remoteJid, '😅 Mème introuvable (lien non-image). Réessayez !', msg);
+    }
+    await sock.sendMessage(remoteJid, {
+      image: res.data,
+      caption: title ? `😂 *${title}*` : '😂 *Mème*',
+    }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 😂 [mème] envoyé`);
+  } catch (err) {
+    debugLog(`[meme] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger le mème. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .wiki <sujet> — résumé Wikipedia (API publique gratuite).
+ * Cherche la page dans la langue du sujet (ou en français par défaut).
+ */
+async function handleWiki(msg, remoteJid, body) {
+  const query = body.replace(/^\.wiki\s*/i, '').trim();
+  if (!query) {
+    return replyError(remoteJid,
+      '📖 *Commande .wiki*\n'
+      + 'Utilisation : `.wiki [sujet]`\n'
+      + 'Exemple : `.wiki poulpe`\n'
+      + 'Affiche le résumé Wikipedia du sujet (gratuit, sans clé).', msg);
+  }
+  try {
+    // Wikipedia exige un User-Agent applicatif (sinon 403).
+    const wikiHeaders = { 'User-Agent': 'BrixBot/1.0 (bot WhatsApp personnel; contact: proprietaire)' };
+    // Recherche de la page (sans redirections) dans l'API Wikipedia
+    const { data: search } = await axios.get('https://fr.wikipedia.org/w/api.php', {
+      params: {
+        action: 'query',
+        list: 'search',
+        srsearch: query,
+        srlimit: 1,
+        format: 'json',
+        origin: '*',
+      },
+      headers: wikiHeaders,
+      timeout: 15000,
+    });
+    const title = search?.query?.search?.[0]?.title;
+    if (!title) {
+      return replyError(remoteJid, `❌ Aucun article Wikipedia trouvé pour « ${query} ».`, msg);
+    }
+    // Résumé de la page (extrait + image éventuelle)
+    const { data: page } = await axios.get('https://fr.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title), {
+      headers: wikiHeaders,
+      timeout: 15000,
+    });
+    const extract = String(page?.extract || '').trim();
+    if (!extract) {
+      return replyError(remoteJid, `❌ Aucun résumé disponible pour « ${query} ».`, msg);
+    }
+    const url = page?.content_urls?.desktop?.page || `https://fr.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`;
+    const thumb = page?.thumbnail?.source;
+    const text = `📖 *${page?.title || title}*\n\n${extract.slice(0, 1400)}\n\n🔗 ${url}`;
+    if (thumb && sock) {
+      try {
+        const res = await axios.get(thumb, {
+          responseType: 'arraybuffer',
+          timeout: 15000,
+          maxContentLength: 10 * 1024 * 1024,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        const ctype = String(res.headers['content-type'] || '');
+        if (res.data && res.data.length && ctype.indexOf('image/') === 0) {
+          await sock.sendMessage(remoteJid, { image: res.data, caption: text }, { quoted: msg });
+          transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📖 [wiki] ${title}`);
+          return;
+        }
+      } catch (_) { /* image indisponible → on envoie le texte seul */ }
+    }
+    await sendChunks(remoteJid, text, msg);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📖 [wiki] ${title}`);
+  } catch (err) {
+    debugLog(`[wiki] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer l\'article Wikipedia. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .news — top 5 actualités du jour (flux RSS Google News France, sans clé).
+ * Le flux RSS est parsé simplement (regex) pour éviter toute dépendance.
+ */
+async function handleNews(msg, remoteJid) {
+  try {
+    const { data } = await axios.get('https://news.google.com/rss?hl=fr&gl=FR&ceid=FR:fr', {
+      timeout: 15000,
+      responseType: 'text',
+    });
+    const html = String(data || '');
+    // Extraction brute des <item> : titre entre <title> et lien entre <link>
+    const items = [];
+    const itemRe = /<item>([\s\S]*?)<\/item>/gi;
+    let m;
+    while ((m = itemRe.exec(html)) && items.length < 5) {
+      const block = m[1];
+      const title = String((block.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '')
+        .replace(/<!\[CDATA\[|\]\]>|<!\[CDATA/gi, '').trim();
+      const link = String((block.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '').trim();
+      if (title && link) items.push({ title, link });
+    }
+    if (!items.length) {
+      return replyError(remoteJid, '😅 Aucune actualité trouvée. Réessayez plus tard.', msg);
+    }
+    const lines = ['📰 *Actualités du moment (France)*', ''];
+    items.forEach((it, i) => {
+      lines.push(`${i + 1}. ${it.title}\n   🔗 ${it.link}`);
+    });
+    await sendChunks(remoteJid, lines.join('\n'), msg);
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📰 [news] ${items.length} titres`);
+  } catch (err) {
+    debugLog(`[news] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de récupérer les actualités. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .short <url> — raccourcit un lien (API is.gd, gratuite, sans clé).
+ */
+async function handleShort(msg, remoteJid, body) {
+  const url = body.replace(/^\.short\s*/i, '').trim();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return replyError(remoteJid,
+      '🔗 *Commande .short*\n'
+      + 'Utilisation : `.short [url]`\n'
+      + 'Exemple : `.short https://exemple.com/une/tre?s=longue`\n'
+      + 'Raccourcit le lien avec is.gd (gratuit, sans clé).', msg);
+  }
+  try {
+    const { data } = await axios.get('https://is.gd/create.php', {
+      params: { format: 'json', url },
+      timeout: 15000,
+    });
+    // is.gd renvoie soit {shorturl: ...}, soit une chaîne d'erreur ("Error, ...")
+    if (!data || typeof data !== 'object' || !data.shorturl) {
+      const errText = typeof data === 'string' ? data : '';
+      debugLog(`[short] is.gd a refusé : ${errText}`);
+      return replyError(remoteJid,
+        '❌ Impossible de raccourcir ce lien.\n'
+        + '_is.gd refuse les domaines non enregistrés (ex: example.com) et les URLs invalides._', msg);
+    }
+    await sock.sendMessage(remoteJid, {
+      text: `🔗 *Lien raccourci*\n\n${data.shorturl}\n\n_Original : ${url.slice(0, 120)}_`,
+    }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔗 [short] ${data.shorturl}`);
+  } catch (err) {
+    debugLog(`[short] erreur API : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de raccourcir le lien. Réessayez plus tard.', msg);
+  }
+}
+
+/**
+ * .qr <texte|url> — génère un QR code en image (librairie qrcode, déjà présente).
+ */
+async function handleQr(msg, remoteJid, body) {
+  const text = body.replace(/^\.qr\s*/i, '').trim();
+  if (!text) {
+    return replyError(remoteJid,
+      '🔳 *Commande .qr*\n'
+      + 'Utilisation : `.qr [texte ou url]`\n'
+      + 'Exemple : `.qr https://wa.me/33612345678`\n'
+      + 'Génère un QR code scannable.', msg);
+  }
+  try {
+    const dataUrl = await QRCode.toDataURL(text, {
+      width: 512,
+      margin: 2,
+      errorCorrectionLevel: 'M',
+    });
+    const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+    await sock.sendMessage(remoteJid, {
+      image: buffer,
+      caption: `🔳 *QR code*\n\n${text.slice(0, 100)}`,
+    }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔳 [qr] ${text.slice(0, 60)}`);
+  } catch (err) {
+    debugLog(`[qr] erreur génération : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de générer le QR code. Réessayez.', msg);
+  }
+}
+
+/**
+ * .avatar [@mention | réponse | numéro] — récupère la photo de profil.
+ * Sans cible : en privé → l'interlocuteur ; en groupe → l'expéditeur.
+ */
+async function handleAvatar(msg, remoteJid, sender, body) {
+  if (!sock || typeof sock.profilePictureUrl !== 'function') {
+    return replyError(remoteJid, '❌ Photo de profil indisponible sur ce compte.', msg);
+  }
+  // Résolution de la cible : mention → message cité → numéro → soi-même
+  const ctx = msg.message?.extendedTextMessage?.contextInfo || {};
+  const quoted = ctx.quotedMessage || null;
+  const mentioned = (ctx.mentionedJid && ctx.mentionedJid[0]) || null;
+  const arg = body.replace(/^\.avatar\s*/i, '').trim();
+  const digits = arg.replace(/\D/g, '');
+
+  let target = mentioned || (quoted ? (ctx.participant || quoted._sender) : null);
+  if (!target && digits.length >= 8) {
+    target = `${digits}@s.whatsapp.net`;
+  }
+  if (!target) target = sender;
+
+  let url = null;
+  try {
+    url = await sock.profilePictureUrl(target, 'image', 15000);
+  } catch (_) { /* pas de photo de profil */ }
+  if (!url) {
+    return replyError(remoteJid, `👤 ${contactLabel(target)} n'a pas de photo de profil publique.`, msg);
+  }
+  try {
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      timeout: 15000,
+      maxContentLength: 10 * 1024 * 1024,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const ctype = String(res.headers['content-type'] || '');
+    if (!res.data || !res.data.length || ctype.indexOf('image/') !== 0) {
+      return replyError(remoteJid, `❌ Impossible de récupérer la photo de ${contactLabel(target)}.`, msg);
+    }
+    await sock.sendMessage(remoteJid, {
+      image: res.data,
+      caption: `👤 *Photo de profil* de ${contactLabel(target)}`,
+    }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👤 [avatar] ${contactLabel(target)}`);
+  } catch (err) {
+    debugLog(`[avatar] téléchargement impossible : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de télécharger la photo de profil.', msg);
+  }
+}
+
+/**
+ * .wame [numéro] — génère un lien wa.me pour démarrer une conversation.
+ * Sans numéro : le numéro du compte lié (inviter quelqu'un à t'écrire).
+ */
+async function handleWame(msg, remoteJid, body) {
+  let digits = body.replace(/^\.wame\s*/i, '').replace(/\D/g, '');
+  if (!digits && sock?.user?.id) {
+    digits = jidLocal(sock.user.id);
+  }
+  if (!digits) {
+    return replyError(remoteJid,
+      '🔗 *Commande .wame*\n'
+      + 'Utilisation : `.wame [numéro]`\n'
+      + 'Exemple : `.wame 33612345678`\n'
+      + 'Sans numéro : génère le lien vers TON numéro (invite quelqu\'un à t\'écrire).', msg);
+  }
+  const link = `https://wa.me/${digits}`;
+  await sock.sendMessage(remoteJid, {
+    text: `🔗 *Lien WhatsApp*\n\n${link}\n\n_Envoyez ce lien pour lancer une conversation avec ${contactLabel(digits + '@s.whatsapp.net')}._`,
+  }, { quoted: msg });
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔗 [wame] ${link}`);
+}
+
+/**
+ * .rank [N] — classement des membres les plus actifs du groupe depuis le
+ * démarrage du bot. En privé : ton propre score. N = taille du classement
+ * (défaut 10, maximum 20).
+ */
+async function handleRank(msg, remoteJid, sender, body) {
+  const isGroup = remoteJid && remoteJid.endsWith('@g.us');
+  const arg = body.replace(/^\.rank\s*/i, '').trim();
+  const parsed = parseInt(arg, 10);
+  // Clamp 1-20 ; si l'argument n'est pas un nombre (ou absent), défaut 10.
+  const limit = Math.min(Math.max(!isNaN(parsed) ? parsed : 10, 1), 20);
+
+  if (!isGroup) {
+    const mine = rankCounts[remoteJid]?.[jidLocal(sender)] || 0;
+    return replyError(remoteJid,
+      `📊 *Ton activité* : ${mine} message(s) envoyé(s) ici depuis le démarrage du bot.\n`
+      + '_Le classement complet n\'est disponible que dans un groupe._', msg);
+  }
+
+  let meta = null;
+  try {
+    meta = await sock.groupMetadata(remoteJid);
+  } catch (_) { /* groupe inaccessible */ }
+  const counts = rankCounts[remoteJid] || {};
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
+  if (!entries.length) {
+    return replyError(remoteJid, '📊 Aucun message comptabilisé pour l\'instant dans ce groupe.', msg);
+  }
+  const names = {};
+  if (meta?.participants) {
+    for (const p of meta.participants) {
+      for (const k of participantKeys(p)) names[k] = p.pushName || contactLabel(p.id);
+    }
+  }
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = [`📊 *Top ${entries.length} — les plus actifs* (depuis le démarrage du bot)`, ''];
+  entries.forEach(([local, n], i) => {
+    const name = names[local] || contactLabel(local + '@s.whatsapp.net');
+    lines.push(`${medals[i] || `${i + 1}.`} ${name} — ${n} message${n > 1 ? 's' : ''}`);
+  });
+  await sendChunks(remoteJid, lines.join('\n'), msg);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📊 [rank] ${entries.length} membres`);
+}
+
+/**
+ * .poll question | option1 | option2 [| option3…] — crée un vrai sondage
+ * WhatsApp (réponses natives, tout le monde peut voter une fois).
+ */
+async function handlePoll(msg, remoteJid, body) {
+  const rest = body.replace(/^\.poll\s*/i, '').trim();
+  const parts = rest.split('|').map((p) => p.trim()).filter(Boolean);
+  const question = parts[0];
+  const options = parts.slice(1);
+  if (!question || options.length < 2) {
+    return replyError(remoteJid,
+      '📊 *Commande .poll*\n'
+      + 'Utilisation : `.poll question | option1 | option2 [| option3…]`\n'
+      + 'Exemple : `.poll Où mange-t-on ? | Pizza | Sushi | Kebab`\n'
+      + 'Crée un vrai sondage WhatsApp : chacun vote une fois, résultats en direct.', msg);
+  }
+  if (options.length > 12) {
+    return replyError(remoteJid, '❌ Maximum 12 options par sondage.', msg);
+  }
+  try {
+    await sock.sendMessage(remoteJid, {
+      poll: {
+        name: question,
+        values: options,
+        selectableCount: 1,
+      },
+    }, { quoted: msg });
+    transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📊 [poll] ${question} (${options.length} options)`);
+  } catch (err) {
+    debugLog(`[poll] erreur envoi : ${err.message}`);
+    return replyError(remoteJid, '❌ Impossible de créer le sondage (WhatsApp a refusé).', msg);
   }
 }
 
