@@ -771,6 +771,17 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commande .spamstop : arrête un spam en cours (.spam / .mention).
+  // Placée AVANT l'interrupteur général : elle fonctionne même si le bot est
+  // éteint (.bot off) — on peut toujours couper un spam qui tourne encore. ---
+  if (/^\.spamstop\b/i.test(trimmed)) {
+    debugLog(`[spamstop] commande : ${trimmed}`);
+    handleSpamStopCommand(msg, remoteJid, sender, trimmed).catch((err) => {
+      debugLog(`[spamstop] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   // Interrupteur général : bot éteint → on IGNORE tout (le .bot on est déjà
   // traité ci-dessus). Le transcript continue d'être enregistré (passif, sans
   // réaction).
@@ -4002,6 +4013,11 @@ const SPAM_DELAY_MS = 350;
 // Longueur maximum du message répété (tronqué au-delà).
 const SPAM_MSG_MAX = 500;
 
+// Générateur par conversation pour arrêter un spam en cours (.spamstop) :
+// chaque nouveau .spam/.mention incrémente la génération du chat ; .spamstop
+// l'incrémente aussi → la boucle en cours détecte le changement et s'arrête.
+const spamRunGen = {}; // { [remoteJid]: numéro de génération }
+
 /**
  * .spam <nombre> <message> — envoie le message en boucle dans la conversation.
  *
@@ -4114,9 +4130,17 @@ async function handleSpamCommand(msg, remoteJid, sender, body) {
   }
   debugLog(`[spam] ${count} × « ${text.slice(0, 40)} » dans ${remoteJid} (par ${senderLocal})`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🔁 [spam] ${count} × « ${text.slice(0, 40)} » (par ${contactLabel(sender)})`);
+
+  // Génération courante : .spamstop l'incrémentera pour couper la boucle.
+  spamRunGen[remoteJid] = (spamRunGen[remoteJid] || 0) + 1;
+  const gen = spamRunGen[remoteJid];
   let sent = 0;
   for (let i = 0; i < count; i++) {
     if (!sock) break;
+    if (spamRunGen[remoteJid] !== gen) {
+      debugLog(`[spam] arrêté par .spamstop (${sent}/${count} envoyés)`);
+      break;
+    }
     try {
       await sock.sendMessage(remoteJid, { text });
       sent++;
@@ -4202,9 +4226,17 @@ async function handleMentionCommand(msg, remoteJid, sender, body) {
   }
   debugLog(`[mention] ${count} × mention de ${target} dans ${remoteJid} (par ${senderLocal})`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📣 [mention] ${count} × ${contactLabel(target)} (par ${contactLabel(sender)})`);
+
+  // Génération courante : .spamstop l'incrémentera pour couper la boucle.
+  spamRunGen[remoteJid] = (spamRunGen[remoteJid] || 0) + 1;
+  const gen = spamRunGen[remoteJid];
   let sent = 0;
   for (let i = 0; i < count; i++) {
     if (!sock) break;
+    if (spamRunGen[remoteJid] !== gen) {
+      debugLog(`[mention] arrêté par .spamstop (${sent}/${count} envoyés)`);
+      break;
+    }
     try {
       await sock.sendMessage(remoteJid, { text: line, mentions: [target] });
       sent++;
@@ -4217,6 +4249,52 @@ async function handleMentionCommand(msg, remoteJid, sender, body) {
   }
   debugLog(`[mention] terminé : ${sent}/${count} envoyés`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : ✅ [mention terminé] ${sent}/${count} envoyés`);
+}
+
+/**
+ * .spamstop [numéro] — arrête immédiatement le spam en cours.
+ *
+ *   .spamstop               → arrête le spam dans CETTE conversation
+ *   .spamstop 33612345678   → arrête le spam dans la conversation de ce numéro
+ *
+ * Mécanisme : chaque .spam/.mention tourne avec la génération du chat
+ * (spamRunGen[remoteJid]) ; cette commande l'incrémente → la boucle en cours
+ * détecte le changement à l'itération suivante et s'arrête.
+ *
+ * Autorisation identique à .spam : propriétaire, ou personne autorisée dans
+ * cette conversation via .spamon.
+ */
+async function handleSpamStopCommand(msg, remoteJid, sender, body) {
+  // --- Autorisation : propriétaire OU personne autorisée dans CE chat ---
+  const isOwner = !!msg.key.fromMe;
+  const chatLocal = jidLocal(remoteJid);
+  const senderLocal = jidLocal(sender);
+  const allowed = isOwner
+    || !!(botState.spamAllow && botState.spamAllow[chatLocal]
+      && botState.spamAllow[chatLocal][senderLocal]);
+  if (!allowed) {
+    debugLog(`[spamstop] refusé pour ${senderLocal} (non autorisé dans ${chatLocal})`);
+    return; // silencieux, comme .spam
+  }
+
+  // --- Conversation visée : numéro en argument, sinon la conversation courante ---
+  const arg = body.replace(/^\.spamstop\s*/i, '').trim();
+  const digits = arg.replace(/\D/g, '');
+  let targetRemote = remoteJid;
+  if (digits.length >= 8) {
+    const key = (digits.length === 10 && digits.startsWith('0')) ? `33${digits.slice(1)}` : digits;
+    targetRemote = `${key}@s.whatsapp.net`;
+  }
+
+  // Invalide la génération → toutes les boucles en cours dans ce chat s'arrêtent.
+  spamRunGen[targetRemote] = (spamRunGen[targetRemote] || 0) + 1;
+  debugLog(`[spamstop] arrêt demandé pour ${targetRemote} (par ${senderLocal})`);
+  if (sock) {
+    sock.sendMessage(remoteJid, {
+      text: `🛑 *Spam arrêté*${targetRemote === remoteJid ? '' : ` (${contactLabel(targetRemote)})`}.`,
+    }, { quoted: msg }).catch(() => {});
+  }
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 🛑 [spamstop] ${contactLabel(targetRemote)} (par ${contactLabel(sender)})`);
 }
 
 /**

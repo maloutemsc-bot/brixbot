@@ -384,6 +384,7 @@ docker compose logs -f bot
 | `.ia liste` | Liste les conversations où l'IA est active |
 | `.rev` (réponse à une photo ou légende `.rev`) | Recherche d'images inversée : upload anonyme (catbox.moe) + recherche Yandex des images similaires (titre + source), puis liens Google Lens / Yandex pour creuser. Gratuit, sans clé (`requests` seul) |
 | `.spam 1000 coucou` | Envoie le message en boucle dans la conversation (réservé au propriétaire, ou aux personnes autorisées via `.spamon` en réponse à un de leurs messages ; `.spamoff` retire l'autorisation). Maximum 1000 envois, pause anti-ban entre chaque |
+| `.spamstop` (ou `.spamstop 33612345678`) | Arrête immédiatement le spam en cours dans la conversation (ou celle du numéro passé). Fonctionne aussi quand le bot est éteint (`.bot off`) — même autorisation que `.spam` |
 | `.mention 10 @Jean` | Spam de mentions : mentionne la personne en boucle (cible par `@mention`, message cité ou numéro ; texte optionnel après). Même autorisation que `.spam` |
 | `.history 10` (réponse à un message, @mention ou numéro) | Les 10 derniers messages de la personne dans cette conversation, lus depuis le journal du backend (les mêmes données que l'onglet Chats du panneau — couvre tous les messages, même avant un redémarrage) |
 | `.clear oui` | Purge les messages de la conversation pour tout le monde (**réservé au propriétaire**) |

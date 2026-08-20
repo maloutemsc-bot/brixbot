@@ -131,7 +131,7 @@ HELP_TEXT = (
     "🧹 `.clear` — purge les messages de la conversation · 👢 `.kickall oui` — expulse tous les membres du groupe (tous deux réservés au propriétaire)\n"
     "📜 `.history 10` (réponse à un message ou @mention) — les 10 derniers messages de la personne dans ce chat\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
-    "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse)\n"
+    "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse) · 🛑 `.spamstop` — arrête le spam en cours (`.spamstop 33612345678` pour un autre chat)\n"
     "    📣 `.mention 10 @Jean` (ou réponse à un message) — spam de mentions (même autorisation que `.spam`)\n"
     "🎤 Les notes vocales sont transcrites automatiquement (réglage dans le panneau).\n"
     "💬 Envoie un message normal pour discuter avec l'IA."
