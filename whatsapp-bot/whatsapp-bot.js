@@ -1275,6 +1275,25 @@ async function handleMessage(msg) {
     return;
   }
 
+  // --- Commandes .grpspam / .grp : création de groupes (réservées au propriétaire).
+  //   .grp Mon Groupe 33612345678 … → groupe avec ces numéros + moi
+  //   .grp Mon Groupe (réponse/@mention) → groupe avec la personne + moi
+  //   .grpspam Mon Groupe 5 → 5 groupes « Mon Groupe » avec la personne + moi ---
+  if (/^\.grpspam\b/i.test(trimmed)) {
+    debugLog(`[grpspam] commande : ${trimmed}`);
+    handleGroupSpam(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[grpspam] erreur : ${err.message}`);
+    });
+    return;
+  }
+  if (/^\.grp\b/i.test(trimmed)) {
+    debugLog(`[grp] commande : ${trimmed}`);
+    handleGroupCreate(msg, remoteJid, trimmed).catch((err) => {
+      debugLog(`[grp] erreur : ${err.message}`);
+    });
+    return;
+  }
+
   try {
     const { data } = await axios.post(`${FLASK_URL}/api/message`, {
       from: sender,
@@ -2988,6 +3007,31 @@ function jidLocal(jid) {
 }
 
 /**
+ * Jid "propre" sans suffixe d'appareil : "33612345678:38@s.whatsapp.net" →
+ * "33612345678@s.whatsapp.net" (format attendu pour créer un groupe).
+ */
+function jidBase(jid) {
+  const s = String(jid || '');
+  const at = s.indexOf('@');
+  if (at === -1) return s;
+  return `${s.slice(0, at).split(':')[0]}${s.slice(at)}`;
+}
+
+/**
+ * Convertit un numéro brut en jid WhatsApp international :
+ * "0612345678" → "33612345678@s.whatsapp.net" ; accepte aussi "+33...", "33...",
+ * "0033...". Renvoie null si le numéro est invalide (hors 9-15 chiffres).
+ */
+function numberToJid(raw) {
+  let digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.length === 10 && digits.startsWith('0')) digits = `33${digits.slice(1)}`;
+  if (digits.length < 9 || digits.length > 15) return null;
+  return `${digits}@s.whatsapp.net`;
+}
+
+/**
  * Toutes les identifications locales d'un participant de groupe.
  * WhatsApp migre vers l'adressage LID : `id` peut être un identifiant
  * numérique (@lid) et le vrai numéro est alors dans `phoneNumber` (et
@@ -3217,6 +3261,172 @@ async function handleKickAllCommand(msg, remoteJid, body) {
   });
   debugLog(`[admin] kickall : ${kicked}/${targets.length}`);
   transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👢 [kickall] ${kicked}/${targets.length} expulsés`);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Création de groupes : .grp et .grpspam (réservées au propriétaire)        */
+/* -------------------------------------------------------------------------- */
+
+const GRP_MAX_PARTICIPANTS = 30;   // max de membres (hors moi) ajoutés en un .grp
+const GRP_SPAM_MAX = 10;           // max de groupes créés en un .grpspam (anti-ban)
+const GRP_SPAM_DELAY_MS = 2500;    // pause entre deux créations (anti-ban)
+const GRP_NAME_MAX = 25;           // longueur max d'un nom de groupe WhatsApp
+
+/**
+ * .grp — crée un groupe WhatsApp. Réservé au propriétaire (compte lié).
+ *   .grp Mon Groupe 33612345678 33698765432  → groupe avec ces numéros + moi
+ *   .grp Mon Groupe (réponse ou @mention)     → groupe avec la personne + moi
+ *   .grp Mon Groupe                           → groupe avec moi uniquement
+ * Le lien d'invitation est renvoyé à la fin.
+ */
+async function handleGroupCreate(msg, remoteJid, body) {
+  // Réservé au propriétaire : le compte lié au bot (fromMe). Refus silencieux sinon.
+  if (!msg.key.fromMe) return;
+  if (!sock) return replyError(remoteJid, '❌ Bot non connecté.', msg);
+
+  const me = jidBase(sock.user?.id);
+  const isGroupChat = remoteJid.endsWith('@g.us');
+
+  const arg = body.replace(/^\.grp\s*/i, '').trim();
+  if (!arg) {
+    return replyError(remoteJid,
+      '👥 *Créer un groupe*\n\n'
+      + '.grp Mon Groupe\n'
+      + '.grp Mon Groupe 33612345678 33698765432\n\n'
+      + 'Sans numéros : réponds à un message ou @mentionne la personne — '
+      + 'le groupe sera créé avec elle et toi. En privé, avec ton interlocuteur.', msg);
+  }
+
+  // Extraire les numéros (tokens de 9 à 15 chiffres) ; le reste = nom du groupe
+  const tokens = arg.split(/\s+/);
+  const numTokens = tokens.filter((t) => /^\+?\d{9,15}$/.test(t));
+  const name = tokens.filter((t) => !/^\+?\d{9,15}$/.test(t)).join(' ').trim().slice(0, GRP_NAME_MAX);
+  if (!name) {
+    return replyError(remoteJid, '⚠️ Donne un nom au groupe : .grp Mon Groupe [numéros]', msg);
+  }
+
+  // Les autres membres (moi = créateur, ajouté automatiquement par WhatsApp)
+  const others = new Set();
+  for (const t of numTokens) {
+    const jid = numberToJid(t);
+    if (jid && jid !== me) others.add(jid);
+  }
+  if (!numTokens.length) {
+    // Pas de numéros → cible = personne répondue / mentionnée, ou l'interlocuteur en privé
+    const target = await resolveTarget(msg, remoteJid, '');
+    const tJid = target ? jidBase(target) : null;
+    if (tJid && tJid !== me) others.add(tJid);
+    if (!tJid && !isGroupChat) others.add(remoteJid); // en DM : l'interlocuteur
+  }
+
+  const list = [...others];
+  if (list.length > GRP_MAX_PARTICIPANTS) {
+    return replyError(remoteJid, `⚠️ Trop de participants (max ${GRP_MAX_PARTICIPANTS} par création).`, msg);
+  }
+
+  // Création : d'abord avec tout le monde d'un coup ; si WhatsApp refuse
+  // (ex. contact non enregistré), repli sur une création seul(e) puis ajout
+  // individuel pour identifier précisément les échecs.
+  let meta;
+  try {
+    meta = await sock.groupCreate(name, list);
+  } catch (_) {
+    try {
+      meta = await sock.groupCreate(name, []);
+    } catch (err2) {
+      return replyError(remoteJid, `❌ Impossible de créer le groupe : ${err2.message}`, msg);
+    }
+    const failed = [];
+    for (const jid of list) {
+      try {
+        await sock.groupParticipantsUpdate(meta.id, [jid], 'add');
+        await sleep(400); // espacement anti-rate-limit
+      } catch (_) {
+        failed.push(contactLabel(jid));
+      }
+    }
+    if (failed.length) {
+      return replyError(remoteJid,
+        `✅ Groupe « ${name} » créé, mais ${failed.length} ajout(s) impossible(s) : ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? '…' : ''}\n\n`
+        + '⚠️ WhatsApp exige que la personne t\'ait enregistré en contact (ou que ses réglages de confidentialité le permettent).', msg);
+    }
+  }
+
+  // Lien d'invitation du groupe fraîchement créé
+  let link = '';
+  try {
+    const code = await sock.groupInviteCode(meta.id);
+    if (code) link = `\n🔗 https://chat.whatsapp.com/${code}`;
+  } catch (_) { /* pas grave */ }
+
+  await sock.sendMessage(remoteJid, {
+    text: `✅ Groupe « ${name} » créé !\n👥 ${list.length + 1} membre(s) (avec toi)${link}`,
+  }, { quoted: msg });
+  debugLog(`[grp] groupe créé : ${meta.id} (${list.length + 1} membres)`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 👥 [grp] « ${name} » créé (${list.length + 1} membres)`);
+}
+
+/**
+ * .grpspam Nom N — crée N groupes « Nom » avec toi et la personne répondue /
+ * mentionnée. Réservé au propriétaire. Pause anti-ban entre chaque création.
+ */
+async function handleGroupSpam(msg, remoteJid, body) {
+  // Réservé au propriétaire : le compte lié au bot (fromMe). Refus silencieux sinon.
+  if (!msg.key.fromMe) return;
+  if (!sock) return replyError(remoteJid, '❌ Bot non connecté.', msg);
+
+  const me = jidBase(sock.user?.id);
+  const isGroupChat = remoteJid.endsWith('@g.us');
+
+  const arg = body.replace(/^\.grpspam\s*/i, '').trim();
+  const m = arg.match(/^(.*?)\s+(\d+)\s*$/);
+  if (!m) {
+    return replyError(remoteJid,
+      '📦 *Création en série*\n\n'
+      + '.grpspam Mon Groupe 5\n\n'
+      + `Crée jusqu'à ${GRP_SPAM_MAX} groupes « Mon Groupe », chacun avec toi et la personne répondue/@mentionnée.`, msg);
+  }
+  const name = m[1].trim().slice(0, GRP_NAME_MAX);
+  const count = Math.min(Math.max(parseInt(m[2], 10) || 1, 1), GRP_SPAM_MAX);
+  if (!name) {
+    return replyError(remoteJid, '⚠️ Donne un nom : .grpspam Mon Groupe 5', msg);
+  }
+
+  // Membres : moi + la personne répondue / mentionnée (ou l'interlocuteur en DM)
+  const participants = [me];
+  const target = await resolveTarget(msg, remoteJid, '');
+  const tJid = target ? jidBase(target) : null;
+  if (tJid && tJid !== me) participants.push(tJid);
+  if (!tJid && !isGroupChat) participants.push(remoteJid);
+
+  await sock.sendMessage(remoteJid, { text: `📦 Création de ${count} groupe(s) « ${name} »…` }).catch(() => {});
+
+  const created = [];
+  const failed = [];
+  for (let i = 1; i <= count; i += 1) {
+    const subject = count > 1 ? `${name} ${i}` : name;
+    try {
+      const meta = await sock.groupCreate(subject, participants.filter((j) => j !== me));
+      let link = '';
+      try {
+        const code = await sock.groupInviteCode(meta.id);
+        if (code) link = ` → https://chat.whatsapp.com/${code}`;
+      } catch (_) { /* pas grave */ }
+      created.push(`• ${subject}${link}`);
+      debugLog(`[grpspam] ${i}/${count} créé : ${meta.id}`);
+    } catch (err) {
+      failed.push(subject);
+      debugLog(`[grpspam] ${i}/${count} échec : ${err.message}`);
+    }
+    if (i < count) await sleep(GRP_SPAM_DELAY_MS);
+  }
+
+  let text = `✅ ${created.length}/${count} groupe(s) créé(s).`;
+  if (created.length) text += `\n\n${created.join('\n')}`;
+  if (failed.length) text += `\n\n⚠️ Échecs : ${failed.join(', ')}`;
+  await sock.sendMessage(remoteJid, { text }, { quoted: msg });
+  debugLog(`[grpspam] ${created.length}/${count} groupes créés`);
+  transcriptLog(`[${fmtStamp(new Date())}] 🤖 BrixBot : 📦 [grpspam] ${created.length}/${count} groupes créés`);
 }
 
 /** .mute / .unmute — silence un membre (ses messages sont supprimés). */

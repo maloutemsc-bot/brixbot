@@ -389,6 +389,8 @@ docker compose logs -f bot
 | `.history 10` (réponse à un message, @mention ou numéro) | Les 10 derniers messages de la personne dans cette conversation, lus depuis le journal du backend (les mêmes données que l'onglet Chats du panneau — couvre tous les messages, même avant un redémarrage) |
 | `.clear oui` | Purge les messages de la conversation pour tout le monde (**réservé au propriétaire**) |
 | `.kickall oui` | Expulse tous les membres d'un groupe sauf les admins, le créateur et le bot (**réservé au propriétaire**, confirmation requise, lots espacés anti-rate-limit) |
+| `.grp Nom [numéros]` | Crée un groupe WhatsApp (**réservé au propriétaire**). Sans numéros : en répondant à un message ou avec @mention, le groupe est créé avec toi + la personne ; en privé, avec ton interlocuteur. Lien d'invitation renvoyé. Ajouts impossibles (contact non enregistré) signalés |
+| `.grpspam Nom N` | Crée N groupes « Nom » (max 10, pause anti-ban de 2,5 s entre chaque) avec toi + la personne répondue/@mentionnée (**réservé au propriétaire**) |
 | `.joke` | Blague aléatoire en français (JokeAPI, gratuit, sans clé) |
 | `.fact` | Fait insolite aléatoire (Useless Facts, gratuit, sans clé) |
 | `.meme` | Mème aléatoire populaire en image (Meme-API, gratuit, sans clé) |

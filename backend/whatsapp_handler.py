@@ -153,6 +153,7 @@ HELP_TEXT = (
     "    😄 `.joke` — blague · 💡 `.fact` — fait insolite · 😂 `.meme` — mème aléatoire · 📖 `.wiki sujet` — résumé Wikipedia · 📰 `.news` — actu du jour · 🔗 `.short url` — lien raccourci · 🔳 `.qr texte` — QR code\n"
     "    👤 `.avatar` (@mention/réponse) — photo de profil · 🔗 `.wame [numéro]` — lien wa.me · 📊 `.rank [N]` — top des plus actifs (groupe) · 📊 `.poll question | opt1 | opt2…` — vrai sondage WhatsApp\n"
     "🧹 `.clear` — purge les messages de la conversation · 👢 `.kickall oui` — expulse tous les membres du groupe (tous deux réservés au propriétaire)\n"
+    "👥 `.grp Nom [numéros]` — crée un groupe (sans numéros : réponse/@mention → toi + la personne ; en privé, l'interlocuteur) · 📦 `.grpspam Nom N` — crée N groupes avec la personne (max 10) — tous deux réservés au propriétaire\n"
     "📜 `.history 10` (réponse à un message ou @mention) — les 10 derniers messages de la personne dans ce chat\n"
     "🧠 `.clearmem` (réponse à un message) — efface la mémoire IA de l'utilisateur (propriétaire)\n"
     "    🔁 `.spam 1000 coucou` — envoie un message en boucle (propriétaire, ou autorisé via `.spamon` sur une réponse) · 🛑 `.spamstop` — arrête le spam en cours (`.spamstop 33612345678` pour un autre chat)\n"
